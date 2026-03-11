@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Slow Burn Poker">
+<title>Slow Burn Poker</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+  html { touch-action: manipulation; }
+  body {
+    background: #0a2912;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+    overscroll-behavior: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback, useMemo, useEffect, useRef } = React;
+
+const SUITS = ["spades", "hearts", "diamonds", "clubs"];
+const SUIT_SYMBOLS = { spades: "♠", hearts: "♥", diamonds: "♦", clubs: "♣" };
+const SUIT_COLORS = { spades: "#1a1a2e", hearts: "#c0392b", diamonds: "#c0392b", clubs: "#1a1a2e" };
+const VALUE_NAMES = { 2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A" };
+
+const PHASES = {
+  START: "start",
+  R1_COMMUNAL: "r1_communal", R1_DISCARD: "r1_discard", R1_PLAY: "r1_play", R1_REVEAL: "r1_reveal",
+  R2_COMMUNAL: "r2_communal", R2_DISCARD: "r2_discard", R2_PLAY: "r2_play", R2_REVEAL: "r2_reveal",
+  R3_COMMUNAL: "r3_communal", R3_DISCARD: "r3_discard", R3_PLAY: "r3_play", R3_REVEAL: "r3_reveal",
+  GAME_OVER: "game_over",
+};
+
+function createDeck() {
+  const deck = [];
+  for (const suit of SUITS) for (let v = 2; v <= 14; v++) deck.push({ suit, value: v, id: `${v}-${suit}` });
+  return deck;
+}
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+function isFlush(cards) { return cards.every(c => c.suit === cards[0].suit); }
+
+function isStraight(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] !== sorted[i-1] + 1) {
+      if (sorted.includes(14)) {
+        const aceLow = sorted.map(v => v === 14 ? 1 : v).sort((a, b) => a - b);
+        let ok = true;
+        for (let j = 1; j < aceLow.length; j++) { if (aceLow[j] !== aceLow[j-1] + 1) { ok = false; break; } }
+        if (ok) return { yes: true, high: aceLow[aceLow.length - 1] };
+      }
+      return { yes: false };
+    }
+  }
+  return { yes: true, high: sorted[sorted.length - 1] };
+}
+
+function getValueCounts(cards) {
+  const c = {};
+  for (const card of cards) c[card.value] = (c[card.value] || 0) + 1;
+  return c;
+}
+
+function evaluate3CardHand(cards) {
+  const values = cards.map(c => c.value);
+  const flush = isFlush(cards), straight = isStraight(values);
+  const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
+  const pairs = Object.entries(counts).filter(([,c]) => c === 2).map(([v]) => +v);
+  const trips = Object.entries(counts).filter(([,c]) => c === 3).map(([v]) => +v);
+  if (straight.yes && flush) return { rank: 5, name: "Straight Flush", kickers: [straight.high] };
+  if (trips.length) return { rank: 4, name: "Three of a Kind", kickers: trips };
+  if (straight.yes) return { rank: 3, name: "Straight", kickers: [straight.high] };
+  if (flush) return { rank: 2, name: "Flush", kickers: sorted };
+  if (pairs.length) return { rank: 1, name: "Pair", kickers: [...pairs, ...sorted.filter(v => v !== pairs[0])] };
+  return { rank: 0, name: "High Card", kickers: sorted };
+}
+
+function evaluate5CardHand(cards) {
+  const values = cards.map(c => c.value);
+  const flush = isFlush(cards), straight = isStraight(values);
+  const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
+  const groups = Object.entries(counts).map(([v, c]) => ({ value: +v, count: c })).sort((a, b) => b.count - a.count || b.value - a.value);
+  const quads = groups.filter(g => g.count === 4), trips = groups.filter(g => g.count === 3), pairs = groups.filter(g => g.count === 2);
+  if (straight.yes && flush && sorted[0] === 14 && sorted[sorted.length-1] === 10) return { rank: 9, name: "Royal Flush", kickers: [14] };
+  if (straight.yes && flush) return { rank: 8, name: "Straight Flush", kickers: [straight.high] };
+  if (quads.length) return { rank: 7, name: "Four of a Kind", kickers: [quads[0].value, ...sorted.filter(v => v !== quads[0].value)] };
+  if (trips.length && pairs.length) return { rank: 6, name: "Full House", kickers: [trips[0].value, pairs[0].value] };
+  if (flush) return { rank: 5, name: "Flush", kickers: sorted };
+  if (straight.yes) return { rank: 4, name: "Straight", kickers: [straight.high] };
+  if (trips.length) return { rank: 3, name: "Three of a Kind", kickers: [trips[0].value, ...sorted.filter(v => v !== trips[0].value)] };
+  if (pairs.length >= 2) { const pv = pairs.map(p => p.value).sort((a,b) => b-a); return { rank: 2, name: "Two Pair", kickers: [...pv, ...sorted.filter(v => !pv.includes(v))] }; }
+  if (pairs.length === 1) return { rank: 1, name: "One Pair", kickers: [pairs[0].value, ...sorted.filter(v => v !== pairs[0].value)] };
+  return { rank: 0, name: "High Card", kickers: sorted };
+}
+
+function evaluateBest5(cards) {
+  if (cards.length <= 5) return evaluate5CardHand(cards);
+  const combos = [], combo = [];
+  function bt(s) { if (combo.length === 5) { combos.push([...combo]); return; } for (let i = s; i < cards.length; i++) { combo.push(i); bt(i+1); combo.pop(); } }
+  bt(0);
+  let best = null;
+  for (const c of combos) { const ev = evaluate5CardHand(c.map(i => cards[i])); if (!best || compareHands(ev, best) > 0) best = ev; }
+  return best;
+}
+
+function compareHands(a, b) {
+  if (a.rank !== b.rank) return a.rank > b.rank ? 1 : -1;
+  for (let i = 0; i < Math.max(a.kickers.length, b.kickers.length); i++) { const x = a.kickers[i]||0, y = b.kickers[i]||0; if (x !== y) return x > y ? 1 : -1; }
+  return 0;
+}
+
+// ─── Opponent Model ──────────────────────────────────────────────────────────
+// Tracks player behavior across rounds and games to adapt AI strategy
+
+function createOpponentModel() {
+  return {
+    // Per-game observations (reset each game)
+    gameDiscards: [],       // [round0Count, round1Count, round2Count]
+    gamePlayed: [],         // cards player played each round
+    gameHandRanks: [],      // hand ranks player achieved each round
+    
+    // Cross-game patterns (persist across games in session)
+    totalGames: 0,
+    playerWins: 0,
+    avgDiscardsPerRound: [1.5, 1.5, 1.5],  // start neutral
+    avgHandRankR1: 1,       // expected hand rank round 1
+    avgHandRankR2: 2,       // expected hand rank round 2
+    avgHandRankR3: 3,       // expected hand rank round 3
+    highCardSaveRate: 0.5,  // how often player saves aces/kings for later
+    earlyAggression: 0.5,   // 0=conservative early, 1=burns best cards early
+    observations: 0,        // total data points for weighted averaging
+  };
+}
+
+function observeDiscard(model, round, numDiscarded) {
+  model.gameDiscards[round] = numDiscarded;
+  
+  // Update running average
+  const w = Math.min(model.observations + 1, 20); // cap influence of old data
+  const oldAvg = model.avgDiscardsPerRound[round];
+  model.avgDiscardsPerRound[round] = oldAvg + (numDiscarded - oldAvg) / w;
+}
+
+function observePlay(model, round, playedCards, remainingCards) {
+  model.gamePlayed[round] = playedCards;
+  
+  // Track whether player plays high cards early
+  const playedAvgValue = playedCards.reduce((s, c) => s + c.value, 0) / playedCards.length;
+  const allValues = [...playedCards, ...remainingCards];
+  const totalAvgValue = allValues.reduce((s, c) => s + c.value, 0) / allValues.length;
+  
+  // If played cards are above average of all available cards, player is aggressive
+  const aggressionSignal = playedAvgValue > totalAvgValue ? 1 : 0;
+  
+  if (round <= 1) {
+    const w = Math.min(model.observations + 1, 20);
+    model.earlyAggression = model.earlyAggression + (aggressionSignal - model.earlyAggression) / w;
+  }
+  
+  // Track if player tends to keep aces/kings
+  const keptHighCards = remainingCards.filter(c => c.value >= 13).length;
+  const totalHighCards = allValues.filter(c => c.value >= 13).length;
+  if (totalHighCards > 0) {
+    const saveRate = keptHighCards / totalHighCards;
+    const w = Math.min(model.observations + 1, 20);
+    model.highCardSaveRate = model.highCardSaveRate + (saveRate - model.highCardSaveRate) / w;
+  }
+}
+
+function observeHandResult(model, round, handRank) {
+  model.gameHandRanks[round] = handRank;
+  
+  const w = Math.min(model.observations + 1, 20);
+  if (round === 0) model.avgHandRankR1 = model.avgHandRankR1 + (handRank - model.avgHandRankR1) / w;
+  else if (round === 1) model.avgHandRankR2 = model.avgHandRankR2 + (handRank - model.avgHandRankR2) / w;
+  else model.avgHandRankR3 = model.avgHandRankR3 + (handRank - model.avgHandRankR3) / w;
+}
+
+function observeGameEnd(model, playerWon) {
+  model.totalGames++;
+  if (playerWon) model.playerWins++;
+  model.observations++;
+  
+  // Reset per-game tracking
+  model.gameDiscards = [];
+  model.gamePlayed = [];
+  model.gameHandRanks = [];
+}
+
+function getOpponentRead(model, round) {
+  // Returns strategic adjustments based on what we know about the player
+  const read = {
+    // How aggressively should AI play this round? Higher = more aggressive
+    aggression: 0,
+    // How much to prioritize saving high cards? Higher = save more
+    saveHighCards: 0,
+    // Estimated player hand strength this round (based on discard behavior)
+    estimatedPlayerStrength: "unknown",
+  };
+  
+  // If player just discarded this round, read their hand
+  const discardedThisRound = model.gameDiscards[round];
+  if (discardedThisRound !== undefined) {
+    if (discardedThisRound === 0) {
+      read.estimatedPlayerStrength = "strong"; // kept everything = confident
+      read.aggression += 0.3; // need to compete harder
+    } else if (discardedThisRound >= 2) {
+      read.estimatedPlayerStrength = "weak"; // fishing for cards
+      read.aggression -= 0.2; // can afford to save cards
+    } else {
+      read.estimatedPlayerStrength = "moderate";
+    }
+  }
+  
+  // If player is winning a lot, be more aggressive overall
+  if (model.totalGames >= 3) {
+    const winRate = model.playerWins / model.totalGames;
+    if (winRate > 0.6) read.aggression += 0.3; // player is strong, push harder
+    if (winRate < 0.4) read.aggression -= 0.15; // player is weak, can save more
+  }
+  
+  // If player tends to save high cards, AI should too
+  if (model.observations >= 2) {
+    if (model.highCardSaveRate > 0.6) {
+      read.saveHighCards += 0.3; // player hoards, AI should counter-hoard
+    }
+  }
+  
+  // If player is aggressive early (burns best cards in R1/R2), save for R3
+  if (model.observations >= 2 && round <= 1) {
+    if (model.earlyAggression > 0.6) {
+      read.saveHighCards += 0.2; // player blows their load early, save for endgame
+      read.aggression -= 0.1;
+    } else if (model.earlyAggression < 0.4) {
+      read.aggression += 0.15; // player holds back, punish them early
+    }
+  }
+  
+  return read;
+}
+
+// ─── AI Logic ────────────────────────────────────────────────────────────────
+
+function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) {
+  if (maxDiscard === 0) return [];
+  const read = opponentModel ? getOpponentRead(opponentModel, round) : { aggression: 0, saveHighCards: 0, estimatedPlayerStrength: "unknown" };
+  
+  // Evaluate how promising a set of kept cards is (hand potential after discard)
+  function evaluateKeepSet(kept, communal) {
+    let score = 0;
+    const counts = {};
+    for (const c of kept) counts[c.value] = (counts[c.value] || 0) + 1;
+    const allCards = [...kept, ...communal];
+    const allCounts = {};
+    for (const c of allCards) allCounts[c.value] = (allCounts[c.value] || 0) + 1;
+    
+    // Existing pairs/trips/quads (including communal)
+    for (const [v, count] of Object.entries(allCounts)) {
+      if (count >= 4) score += 18;
+      else if (count >= 3) score += 12;
+      else if (count >= 2) score += 6;
+    }
+    
+    // Flush draw
+    const suitCounts = {};
+    for (const c of allCards) suitCounts[c.suit] = (suitCounts[c.suit] || 0) + 1;
+    const maxSuit = Math.max(...Object.values(suitCounts));
+    if (maxSuit >= 5) score += 15;
+    else if (maxSuit === 4) score += 7;
+    else if (maxSuit === 3) score += 2;
+    
+    // Straight draw
+    const uniqueVals = [...new Set(allCards.map(c => c.value))].sort((a, b) => a - b);
+    let maxRun = 1, run = 1;
+    for (let i = 1; i < uniqueVals.length; i++) {
+      if (uniqueVals[i] === uniqueVals[i-1] + 1) { run++; maxRun = Math.max(maxRun, run); }
+      else if (uniqueVals[i] !== uniqueVals[i-1]) run = 1;
+    }
+    if (uniqueVals.includes(14) && uniqueVals.includes(2)) {
+      let aceLowRun = 2;
+      if (uniqueVals.includes(3)) aceLowRun++;
+      if (uniqueVals.includes(4)) aceLowRun++;
+      if (uniqueVals.includes(5)) aceLowRun++;
+      maxRun = Math.max(maxRun, aceLowRun);
+    }
+    if (maxRun >= 5) score += 14;
+    else if (maxRun === 4) score += 6;
+    else if (maxRun === 3) score += 2;
+    
+    // High card preservation — boosted by opponent model
+    const highCardBonus = kept.reduce((sum, c) => sum + c.value, 0) / 14;
+    const roundMultiplier = round === 0 ? 1.5 : round === 1 ? 1.0 : 0.5;
+    const saveBoost = 1 + read.saveHighCards; // opponent model says save more? boost this
+    score += highCardBonus * roundMultiplier * saveBoost;
+    
+    // Synergy with communal cards
+    for (const cc of communal) {
+      for (const k of kept) {
+        if (k.value === cc.value) score += 3;
+        if (k.suit === cc.suit) score += 0.3;
+      }
+    }
+    
+    return score;
+  }
+  
+  let bestDiscard = [];
+  let bestScore = evaluateKeepSet(hand, communalCards);
+
+  // Opponent read adjustments
+  const aggressionMod = read.estimatedPlayerStrength === "strong" ? 1.4
+    : read.estimatedPlayerStrength === "weak" ? 0.7 : 1.0;
+
+  // Expected value of drawing a replacement card from the remaining deck.
+  // An average card has value ~8 (mean of 2-14), contributes ~0.57 to high card bonus,
+  // has ~25% chance to match suit (flush potential), ~15% chance to pair something, etc.
+  // This bonus represents the opportunity value of a fresh draw replacing a weak card.
+  const baseDrawBonus = round === 0 ? 3.5 : round === 1 ? 3.0 : 2.0;
+
+  // Calculate how "weak" each card in hand is relative to the hand's needs
+  function cardWeakness(card, kept, communal) {
+    let weakness = 0;
+    const allCards = [...kept, ...communal];
+    const counts = {};
+    for (const c of allCards) counts[c.value] = (counts[c.value] || 0) + 1;
+
+    // Unpaired low cards are weak
+    if ((counts[card.value] || 0) <= 1 && card.value <= 8) weakness += 2;
+
+    // Cards that don't contribute to flush potential
+    const suitCount = allCards.filter(c => c.suit === card.suit).length;
+    if (suitCount <= 1) weakness += 0.5;
+
+    // Cards isolated from straight potential
+    const nearby = allCards.filter(c => Math.abs(c.value - card.value) <= 2 && c !== card).length;
+    if (nearby === 0) weakness += 0.5;
+
+    // No synergy with communal cards
+    const communalSynergy = communal.some(c => c.value === card.value || c.suit === card.suit);
+    if (!communalSynergy) weakness += 1;
+
+    return weakness;
+  }
+
+  for (let numDiscard = 1; numDiscard <= maxDiscard; numDiscard++) {
+    const discardCombos = getCombinations(hand.length, numDiscard);
+    for (const combo of discardCombos) {
+      const discardSet = new Set(combo);
+      const kept = hand.filter((_, i) => !discardSet.has(i));
+      const discarded = combo.map(i => hand[i]);
+      const keptScore = evaluateKeepSet(kept, communalCards);
+
+      // Reward discarding: each discarded card adds expected draw value
+      // scaled by how weak the discarded cards are (dropping bad cards = more value)
+      const weaknessBonus = discarded.reduce((sum, c) => sum + cardWeakness(c, kept, communalCards), 0);
+      const drawValue = numDiscard * baseDrawBonus * aggressionMod + weaknessBonus;
+
+      // Diminishing returns: discarding 3 isn't 3x as good as discarding 1
+      const diminishingFactor = numDiscard === 1 ? 1.0 : numDiscard === 2 ? 0.85 : 0.7;
+      const adjustedScore = keptScore + (drawValue * diminishingFactor);
+
+      if (adjustedScore > bestScore) {
+        bestScore = adjustedScore;
+        bestDiscard = combo;
+      }
+    }
+  }
+
+  return bestDiscard;
+}
+
+function aiSelectCards(hand, communalCards, numToSelect, round, opponentModel) {
+  const combos = getCombinations(hand.length, numToSelect);
+  const allIndices = hand.map((_, i) => i);
+  const read = opponentModel ? getOpponentRead(opponentModel, round) : { aggression: 0, saveHighCards: 0, estimatedPlayerStrength: "unknown" };
+  
+  // Total value of cards NOT played (kept for later rounds)
+  function keptValue(combo) {
+    const playedSet = new Set(combo);
+    return allIndices.filter(i => !playedSet.has(i)).reduce((sum, i) => sum + hand[i].value, 0);
+  }
+  
+  // Highest single card kept
+  function keptHighCard(combo) {
+    const playedSet = new Set(combo);
+    const kept = allIndices.filter(i => !playedSet.has(i));
+    return kept.length > 0 ? Math.max(...kept.map(i => hand[i].value)) : 0;
+  }
+  
+  // Evaluate how strong the leftover cards are as a group for future rounds
+  function futureHandPotential(combo) {
+    const playedSet = new Set(combo);
+    const kept = allIndices.filter(i => !playedSet.has(i)).map(i => hand[i]);
+    if (kept.length === 0) return 0;
+    
+    let score = 0;
+    const counts = {};
+    for (const c of kept) counts[c.value] = (counts[c.value] || 0) + 1;
+    
+    // Pairs/trips in remaining cards
+    for (const [v, count] of Object.entries(counts)) {
+      if (count >= 3) score += 8;
+      else if (count >= 2) score += 4;
+    }
+    
+    // Flush potential in remaining
+    const suitCounts = {};
+    for (const c of kept) suitCounts[c.suit] = (suitCounts[c.suit] || 0) + 1;
+    const maxSuit = Math.max(...Object.values(suitCounts));
+    if (maxSuit >= 3) score += 3;
+    
+    // Straight potential in remaining
+    const vals = kept.map(c => c.value).sort((a, b) => a - b);
+    let maxRun = 1, run = 1;
+    for (let i = 1; i < vals.length; i++) {
+      if (vals[i] === vals[i-1] + 1) { run++; maxRun = Math.max(maxRun, run); }
+      else if (vals[i] !== vals[i-1]) run = 1;
+    }
+    if (maxRun >= 3) score += 3;
+    
+    // Raw high card value
+    score += kept.reduce((sum, c) => sum + c.value, 0) / 14;
+    
+    return score;
+  }
+  
+  if (round === 0) {
+    // Round 1 (1pt): play the best hand but favor preserving strong cards
+    // Adjust based on opponent read
+    const futureTolerance = read.estimatedPlayerStrength === "strong" ? 1 
+      : read.estimatedPlayerStrength === "weak" ? 5 : 3;
+    const futureTradeThreshold = read.estimatedPlayerStrength === "strong" ? 10 
+      : read.estimatedPlayerStrength === "weak" ? 4 : 6;
+    
+    let bestCombo = combos[0], bestEval = null, bestFuture = 0;
+    
+    for (const combo of combos) {
+      const full = [...combo.map(i => hand[i]), ...communalCards];
+      const ev = evaluate3CardHand(full);
+      const future = futureHandPotential(combo) * (1 + read.saveHighCards);
+      
+      if (!bestEval) {
+        bestEval = ev; bestCombo = combo; bestFuture = future;
+        continue;
+      }
+      
+      const cmp = compareHands(ev, bestEval);
+      
+      if (cmp > 0) {
+        if (ev.rank > bestEval.rank) {
+          bestEval = ev; bestCombo = combo; bestFuture = future;
+        } else {
+          if (future >= bestFuture - futureTolerance) {
+            bestEval = ev; bestCombo = combo; bestFuture = future;
+          }
+        }
+      } else if (cmp === 0) {
+        if (future > bestFuture) {
+          bestCombo = combo; bestFuture = future;
+        }
+      } else {
+        if (ev.rank === bestEval.rank && future > bestFuture + futureTradeThreshold) {
+          bestEval = ev; bestCombo = combo; bestFuture = future;
+        }
+      }
+    }
+    return bestCombo;
+  }
+  
+  if (round === 1) {
+    // Round 2 (2pts): more aggressive but still mind round 3 (3pts)
+    // If player looks strong this round, play harder
+    const futureTolerance = read.estimatedPlayerStrength === "strong" ? 2 
+      : read.estimatedPlayerStrength === "weak" ? 7 : 5;
+    const futureTradeThreshold = read.estimatedPlayerStrength === "strong" ? 12 
+      : read.estimatedPlayerStrength === "weak" ? 6 : 8;
+    
+    let bestCombo = combos[0], bestEval = null, bestFuture = 0;
+    
+    for (const combo of combos) {
+      const full = [...combo.map(i => hand[i]), ...communalCards];
+      const ev = evaluateBest5(full);
+      const future = futureHandPotential(combo) * (1 + read.saveHighCards * 0.5);
+      
+      if (!bestEval) {
+        bestEval = ev; bestCombo = combo; bestFuture = future;
+        continue;
+      }
+      
+      const cmp = compareHands(ev, bestEval);
+      
+      if (cmp > 0) {
+        if (ev.rank > bestEval.rank) {
+          bestEval = ev; bestCombo = combo; bestFuture = future;
+        } else {
+          if (future >= bestFuture - futureTolerance) {
+            bestEval = ev; bestCombo = combo; bestFuture = future;
+          }
+        }
+      } else if (cmp === 0) {
+        if (future > bestFuture) {
+          bestCombo = combo; bestFuture = future;
+        }
+      } else {
+        if (ev.rank === bestEval.rank && future > bestFuture + futureTradeThreshold) {
+          bestEval = ev; bestCombo = combo; bestFuture = future;
+        }
+      }
+    }
+    return bestCombo;
+  }
+  
+  // Round 3 (3pts): tiebreaker is critical
+  // If player tends to save high cards, AI must try harder to keep its own
+  const tieThreshold = read.saveHighCards > 0.3 ? 3 : 4;
+  const tieMinValue = read.saveHighCards > 0.3 ? 12 : 13; // save Queens too if player hoards
+  let bestCombo = combos[0], bestEval = null, bestLeftoverHigh = 0;
+  
+  for (const combo of combos) {
+    const full = [...combo.map(i => hand[i]), ...communalCards];
+    const ev = evaluateBest5(full);
+    const leftoverHigh = keptHighCard(combo);
+    
+    if (!bestEval) {
+      bestEval = ev; bestCombo = combo; bestLeftoverHigh = leftoverHigh;
+      continue;
+    }
+    
+    const handComparison = compareHands(ev, bestEval);
+    
+    if (handComparison > 0) {
+      bestEval = ev; bestCombo = combo; bestLeftoverHigh = leftoverHigh;
+    } else if (handComparison === 0) {
+      if (leftoverHigh > bestLeftoverHigh) {
+        bestCombo = combo; bestLeftoverHigh = leftoverHigh;
+      }
+    } else {
+      if (ev.rank === bestEval.rank && leftoverHigh >= tieMinValue && leftoverHigh > bestLeftoverHigh + tieThreshold) {
+        bestEval = ev; bestCombo = combo; bestLeftoverHigh = leftoverHigh;
+      }
+    }
+  }
+  
+  return bestCombo;
+}
+
+function getCombinations(n, k) {
+  const r = [], c = [];
+  function bt(s) { if (c.length === k) { r.push([...c]); return; } for (let i = s; i < n; i++) { c.push(i); bt(i+1); c.pop(); } }
+  bt(0); return r;
+}
+
+// ─── Card ────────────────────────────────────────────────────────────────────
+function Card({ card, faceDown, selected, selectable, onClick, small, glowing, overlap, index }) {
+  if (!card) return null;
+  const color = SUIT_COLORS[card.suit];
+  const symbol = SUIT_SYMBOLS[card.suit];
+  const label = VALUE_NAMES[card.value];
+  const w = small ? 58 : 88;
+  const h = small ? 80 : 120;
+
+  return (
+    <div
+      onClick={selectable ? onClick : undefined}
+      onTouchEnd={selectable ? (e) => { e.preventDefault(); onClick && onClick(); } : undefined}
+      style={{
+        width: w, height: h, borderRadius: 8, flexShrink: 0,
+        marginLeft: overlap ? (small ? -26 : -32) : 0,
+        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : "2px solid rgba(0,0,0,0.15)",
+        background: faceDown
+          ? "linear-gradient(135deg, #2c3e50 0%, #1a252f 50%, #2c3e50 100%)"
+          : "linear-gradient(145deg, #fefefe 0%, #f0ead6 100%)",
+        display: "flex", flexDirection: "column", justifyContent: "space-between",
+        padding: small ? "4px 5px" : "6px 8px",
+        cursor: selectable ? "pointer" : "default",
+        WebkitTapHighlightColor: "transparent",
+        touchAction: "manipulation",
+        boxShadow: selected
+          ? "0 -4px 12px rgba(241,196,15,0.4), 0 4px 10px rgba(0,0,0,0.3)"
+          : glowing
+          ? "0 0 12px rgba(231,76,60,0.4), 0 4px 10px rgba(0,0,0,0.3)"
+          : "0 2px 8px rgba(0,0,0,0.25)",
+        transition: "all 0.15s ease",
+        transform: selected ? "translateY(-16px)" : "none",
+        position: "relative", overflow: "hidden", userSelect: "none",
+        zIndex: index != null ? index : 1,
+      }}
+    >
+      {faceDown ? (
+        <div style={{
+          position: "absolute", inset: 5, borderRadius: 4,
+          border: "1.5px solid rgba(255,255,255,0.08)",
+          background: "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.03) 4px, rgba(255,255,255,0.03) 8px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <span style={{ fontSize: small ? 18 : 26, opacity: 0.15 }}>♠</span>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1 }}>
+            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
+            <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
+          </div>
+          <div style={{ fontSize: small ? 24 : 36, textAlign: "center", color, lineHeight: 1, opacity: 0.35 }}>
+            {symbol}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)" }}>
+            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
+            <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Sidebar ─────────────────────────────────────────────────────────────────
+function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, roundResults, collapsed, onToggle, previewHandRank, previewHandEval, aiDiscardCounts }) {
+  const roundNames = ["I", "II", "III"];
+  const roundPts = [1, 2, 3];
+
+  if (collapsed) {
+    return (
+      <div style={{
+        width: 44, minWidth: 44, padding: "12px 4px",
+        background: "linear-gradient(180deg, #1a3a22 0%, #12291a 100%)",
+        borderRight: "1px solid rgba(255,255,255,0.08)",
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+        fontFamily: "'Georgia', serif", color: "#e8e0cc",
+      }}>
+        <button onClick={onToggle} style={{
+          background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6,
+          color: "#f0e6d3", fontSize: 18, cursor: "pointer", padding: "8px 10px", lineHeight: 1,
+          minWidth: 36, minHeight: 36, touchAction: "manipulation",
+        }}>☰</button>
+        <div style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase", opacity: 0.5, writingMode: "vertical-lr" }}>Score</div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: "#f1c40f" }}>{playerScore}</div>
+        <div style={{ fontSize: 10, opacity: 0.3 }}>vs</div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: "#e74c3c" }}>{aiScore}</div>
+        <div style={{ marginTop: 8, fontSize: 9, opacity: 0.4, writingMode: "vertical-lr" }}>
+          R{currentRound + 1}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      width: 220, minWidth: 220, padding: "20px 16px",
+      background: "linear-gradient(180deg, #1a3a22 0%, #12291a 100%)",
+      borderRight: "1px solid rgba(255,255,255,0.08)",
+      display: "flex", flexDirection: "column", gap: 16,
+      fontFamily: "'Georgia', serif", overflowY: "auto", WebkitOverflowScrolling: "touch", color: "#e8e0cc",
+    }} data-scrollable>
+      {/* Collapse button */}
+      <button onClick={onToggle} style={{
+        alignSelf: "flex-end", background: "none", border: "1px solid rgba(255,255,255,0.15)",
+        borderRadius: 6, color: "#f0e6d3", fontSize: 14, cursor: "pointer", padding: "6px 10px",
+        opacity: 0.6, marginBottom: -8, minWidth: 36, minHeight: 36, touchAction: "manipulation",
+      }}>✕</button>
+      {/* Title */}
+      <div style={{ textAlign: "center", paddingBottom: 12, borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+        <div style={{
+          fontSize: 18, fontWeight: 700, letterSpacing: 1,
+          background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)",
+          WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+        }}>SLOW BURN POKER</div>
+        <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: "rgba(255,255,255,0.35)", marginTop: 4 }}>Every Card Counts</div>
+      </div>
+
+      {/* Scores */}
+      <div style={{ background: "rgba(0,0,0,0.15)", borderRadius: 8, padding: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ textAlign: "center", flex: 1 }}>
+            <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.6 }}>You</div>
+            <div style={{ fontSize: 32, fontWeight: 700, color: "#f1c40f" }}>{playerScore}</div>
+          </div>
+          <div style={{ fontSize: 14, opacity: 0.25, padding: "0 8px" }}>vs</div>
+          <div style={{ textAlign: "center", flex: 1 }}>
+            <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.6 }}>Foe</div>
+            <div style={{ fontSize: 32, fontWeight: 700, color: "#e74c3c" }}>{aiScore}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Rounds */}
+      <div>
+        <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5, marginBottom: 8 }}>Rounds</div>
+        {[0,1,2].map(r => {
+          const result = roundResults[r];
+          const active = currentRound === r && phase !== "start" && phase !== "game_over";
+          return (
+            <div key={r} style={{
+              padding: "8px 10px", marginBottom: 4, borderRadius: 6,
+              background: active ? "rgba(241,196,15,0.1)" : result ? "rgba(255,255,255,0.03)" : "transparent",
+              border: active ? "1px solid rgba(241,196,15,0.25)" : "1px solid transparent",
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+            }}>
+              <div>
+                <span style={{ fontSize: 13, color: active ? "#f1c40f" : result ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.35)" }}>
+                  Round {roundNames[r]}
+                </span>
+                {result && <div style={{ fontSize: 10, opacity: 0.5, marginTop: 1 }}>{result.pEval.name} vs {result.aEval.name}</div>}
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 11, opacity: 0.4 }}>{roundPts[r]}pt{roundPts[r]>1?"s":""} base</div>
+                {result && (
+                  <>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: result.winner === "player" ? "#f1c40f" : result.winner === "ai" ? "#e74c3c" : "rgba(255,255,255,0.5)" }}>
+                      {result.winner === "player" ? "Won" : result.winner === "ai" ? "Lost" : "Tie"}
+                      {result.points > 0 && ` +${result.points}`}
+                    </div>
+                    {result.bonus > 0 && <div style={{ fontSize: 9, opacity: 0.4 }}>+{result.bonus} rank bonus</div>}
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Current Round Info */}
+      {phase !== "start" && phase !== "game_over" && (
+        <div style={{ background: "rgba(0,0,0,0.15)", borderRadius: 8, padding: 10, border: "1px solid rgba(255,255,255,0.06)" }}>
+          <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5, marginBottom: 6 }}>This Round</div>
+          <div style={{ fontSize: 12, opacity: 0.85, lineHeight: 1.7 }}>
+            <div>Play <span style={{ color: "#f1c40f", fontWeight: 700 }}>{roundInfo.cardsToPlay}</span> cards</div>
+            <div>+ <span style={{ color: "#e74c3c", fontWeight: 700 }}>{currentRound + 1}</span> communal</div>
+            <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 4, paddingTop: 4 }}>
+              {roundInfo.cardsToPlay + currentRound + 1 > 5
+                ? <>Best <span style={{ color: "#2ecc71", fontWeight: 700 }}>5</span> from {roundInfo.cardsToPlay + currentRound + 1}</>
+                : <><span style={{ color: "#2ecc71", fontWeight: 700 }}>{roundInfo.cardsToPlay + currentRound + 1}</span>-card hand</>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI Discard Intel */}
+      {aiDiscardCounts && aiDiscardCounts.length > 0 && phase !== "start" && phase !== "game_over" && (
+        <div style={{ background: "rgba(231,76,60,0.1)", borderRadius: 8, padding: 10, border: "1px solid rgba(231,76,60,0.2)" }}>
+          <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5, marginBottom: 6, color: "#e74c3c" }}>Foe's Discards</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {aiDiscardCounts.map((count, i) => (
+              <div key={i} style={{
+                flex: 1, textAlign: "center", padding: "4px 0", borderRadius: 4,
+                background: i === currentRound ? "rgba(231,76,60,0.15)" : "rgba(0,0,0,0.1)",
+                border: i === currentRound ? "1px solid rgba(231,76,60,0.3)" : "1px solid transparent",
+              }}>
+                <div style={{ fontSize: 9, opacity: 0.5 }}>R{i+1}</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: count === 0 ? "#2ecc71" : count >= 2 ? "#e74c3c" : "#f1c40f" }}>{count}</div>
+                <div style={{ fontSize: 8, opacity: 0.4 }}>{count === 0 ? "kept all" : count === 1 ? "card" : "cards"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Hand Rankings */}
+      <div style={{ marginTop: "auto" }}>
+        <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.4, marginBottom: 6 }}>
+          {currentRound === 0 ? "3-Card Rankings" : "5-Card Rankings"}
+        </div>
+        {previewHandEval && (
+          <div style={{
+            marginBottom: 6, padding: "4px 8px", borderRadius: 6,
+            background: "rgba(241,196,15,0.12)", border: "1px solid rgba(241,196,15,0.25)",
+            fontSize: 11, color: "#f1c40f", fontWeight: 600, textAlign: "center",
+          }}>
+            {previewHandEval.name}
+          </div>
+        )}
+        {currentRound === 0 ? (
+          <div style={{ fontSize: 10, lineHeight: 1.7 }}>
+            {["Straight Flush","Three of a Kind","Straight","Flush","Pair","High Card"].map((h,i) => {
+              const rank = 5 - i; // 3-card ranks: SF=5, Three=4, Str=3, Flush=2, Pair=1, HC=0
+              const isActive = previewHandRank !== null && previewHandRank === rank;
+              return (
+                <div key={i} style={{
+                  padding: "1px 4px", borderRadius: 3, transition: "all 0.2s",
+                  background: isActive ? "rgba(241,196,15,0.15)" : "transparent",
+                  color: isActive ? "#f1c40f" : "inherit",
+                  opacity: isActive ? 1 : 0.5,
+                  fontWeight: isActive ? 700 : 400,
+                }}>
+                  <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>{h}{isActive && " ◄"}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ fontSize: 10, lineHeight: 1.6 }}>
+            {["Royal Flush","Str. Flush","Four Kind","Full House","Flush","Straight","Three Kind","Two Pair","One Pair","High Card"].map((h,i) => {
+              const rank = 9 - i; // 5-card ranks: RF=9, SF=8, Four=7, FH=6, Fl=5, St=4, Three=3, 2P=2, 1P=1, HC=0
+              const isActive = previewHandRank !== null && previewHandRank === rank;
+              return (
+                <div key={i} style={{
+                  padding: "1px 4px", borderRadius: 3, transition: "all 0.2s",
+                  background: isActive ? "rgba(241,196,15,0.15)" : "transparent",
+                  color: isActive ? "#f1c40f" : "inherit",
+                  opacity: isActive ? 1 : 0.5,
+                  fontWeight: isActive ? 700 : 400,
+                }}>
+                  <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>{h}{isActive && " ◄"}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
+function CommunalPoker() {
+  const [deck, setDeck] = useState([]);
+  const [playerHand, setPlayerHand] = useState([]);
+  const [aiHand, setAiHand] = useState([]);
+  const [communalCards, setCommunalCards] = useState([]);
+  const [playerPlayed, setPlayerPlayed] = useState([[], [], []]);
+  const [aiPlayed, setAiPlayed] = useState([[], [], []]);
+  const [selected, setSelected] = useState(new Set());
+  const [phase, setPhase] = useState(PHASES.START);
+  const [playerScore, setPlayerScore] = useState(0);
+  const [aiScore, setAiScore] = useState(0);
+  const [roundResults, setRoundResults] = useState([]);
+  const [message, setMessage] = useState("");
+  const [showAiCards, setShowAiCards] = useState(false);
+  const [tiebreaker, setTiebreaker] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [aiDiscardCounts, setAiDiscardCounts] = useState([]);
+  const [showRules, setShowRules] = useState(false);
+  const opponentModelRef = useRef(createOpponentModel());
+
+  const startGame = useCallback(() => {
+    const d = shuffle(createDeck());
+    setDeck(d.slice(20));
+    setPlayerHand(d.slice(0, 10).sort((a, b) => b.value - a.value));
+    setAiHand(d.slice(10, 20).sort((a, b) => b.value - a.value));
+    setCommunalCards([]); setPlayerPlayed([[], [], []]); setAiPlayed([[], [], []]);
+    setSelected(new Set()); setPlayerScore(0); setAiScore(0);
+    setRoundResults([]); setShowAiCards(false); setTiebreaker(null);
+    setAiDiscardCounts([]);
+    setPhase(PHASES.R1_COMMUNAL); setMessage("");
+  }, []);
+
+  const roundInfo = useMemo(() => {
+    const p = phase;
+    if (p.startsWith("r1")) return { round: 0, maxDiscard: 3, cardsToPlay: 2, points: 1 };
+    if (p.startsWith("r2")) return { round: 1, maxDiscard: 3, cardsToPlay: 3, points: 2 };
+    if (p.startsWith("r3")) return { round: 2, maxDiscard: 3, cardsToPlay: 4, points: 3 };
+    return { round: -1, maxDiscard: 0, cardsToPlay: 0, points: 0 };
+  }, [phase]);
+
+  const toggleSelect = useCallback((idx) => {
+    setSelected(prev => { const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n; });
+  }, []);
+
+  const placeCommunal = useCallback(() => {
+    const nd = [...deck]; const card = nd.shift(); setDeck(nd);
+    setCommunalCards(prev => [...prev, card]); setSelected(new Set()); setShowAiCards(false);
+    const rn = phase === PHASES.R1_COMMUNAL ? 1 : phase === PHASES.R2_COMMUNAL ? 2 : 3;
+    setMessage(`Round ${rn}: A communal card is revealed!`);
+    setTimeout(() => {
+      if (phase === PHASES.R1_COMMUNAL) setPhase(PHASES.R1_DISCARD);
+      else if (phase === PHASES.R2_COMMUNAL) setPhase(PHASES.R2_DISCARD);
+      else setPhase(PHASES.R3_DISCARD);
+    }, 800);
+  }, [deck, phase]);
+
+  useEffect(() => {
+    if ([PHASES.R1_COMMUNAL, PHASES.R2_COMMUNAL, PHASES.R3_COMMUNAL].includes(phase)) placeCommunal();
+  }, [phase]);
+
+  const confirmDiscard = useCallback(() => {
+    const { maxDiscard, round } = roundInfo;
+    const numPlayerDiscarded = [...selected].length;
+    if (numPlayerDiscarded > maxDiscard) { setMessage(`Max ${maxDiscard} cards!`); return; }
+    
+    // Observe player's discard behavior
+    observeDiscard(opponentModelRef.current, round, numPlayerDiscarded);
+    
+    let nd = [...deck];
+    let nph = playerHand.filter((_, i) => !selected.has(i));
+    nph = [...nph, ...nd.splice(0, numPlayerDiscarded)].sort((a, b) => b.value - a.value);
+    const aid = aiDecideDiscard(aiHand, communalCards, maxDiscard, round, opponentModelRef.current);
+    let nah = aiHand.filter((_, i) => !aid.includes(i));
+    nah = [...nah, ...nd.splice(0, aid.length)].sort((a, b) => b.value - a.value);
+    setDeck(nd); setPlayerHand(nph); setAiHand(nah); setSelected(new Set());
+    setAiDiscardCounts(prev => [...prev, aid.length]);
+    setMessage(`Discarded ${numPlayerDiscarded}. Opponent discarded ${aid.length}.`);
+    setTimeout(() => {
+      if (phase === PHASES.R1_DISCARD) setPhase(PHASES.R1_PLAY);
+      else if (phase === PHASES.R2_DISCARD) setPhase(PHASES.R2_PLAY);
+      else setPhase(PHASES.R3_PLAY);
+    }, 600);
+  }, [roundInfo, selected, deck, playerHand, aiHand, communalCards, phase]);
+
+  const confirmPlay = useCallback(() => {
+    const { cardsToPlay, round, points } = roundInfo;
+    if ([...selected].length !== cardsToPlay) { setMessage(`Select exactly ${cardsToPlay}!`); return; }
+    const pi = [...selected];
+    const pp = pi.map(i => playerHand[i]), nph = playerHand.filter((_, i) => !selected.has(i));
+    const ai = aiSelectCards(aiHand, communalCards, cardsToPlay, round, opponentModelRef.current);
+    const ap = ai.map(i => aiHand[i]), nah = aiHand.filter((_, i) => !ai.includes(i));
+    const npp = [...playerPlayed]; npp[round] = pp;
+    const nap = [...aiPlayed]; nap[round] = ap;
+    
+    // Observe player's card choices
+    observePlay(opponentModelRef.current, round, pp, nph);
+    
+    setPlayerHand(nph); setAiHand(nah); setPlayerPlayed(npp); setAiPlayed(nap); setSelected(new Set());
+    const pfh = [...pp, ...communalCards], afh = [...ap, ...communalCards];
+    const ef = pfh.length === 3 ? evaluate3CardHand : evaluateBest5;
+    const pe = ef(pfh), ae = ef(afh), res = compareHands(pe, ae);
+    const rankDiff = Math.abs(pe.rank - ae.rank);
+    let w, totalPoints;
+    if (res > 0) { 
+      w = "player"; totalPoints = points + rankDiff;
+      setPlayerScore(s => s + totalPoints); 
+    } else if (res < 0) { 
+      w = "ai"; totalPoints = points + rankDiff;
+      setAiScore(s => s + totalPoints); 
+    } else { 
+      w = "tie"; totalPoints = 0; 
+    }
+    
+    // Observe hand result
+    observeHandResult(opponentModelRef.current, round, pe.rank);
+    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff }]); setShowAiCards(true);
+    const bonusText = rankDiff > 0 ? ` (${points} base + ${rankDiff} bonus)` : "";
+    setMessage(w === "player" ? `You win! +${totalPoints}pt${totalPoints>1?"s":""}${bonusText}` : w === "ai" ? `Opponent wins! +${totalPoints}pt${totalPoints>1?"s":""}${bonusText}` : "A tie!");
+    setTimeout(() => {
+      if (phase === PHASES.R1_PLAY) setPhase(PHASES.R1_REVEAL);
+      else if (phase === PHASES.R2_PLAY) setPhase(PHASES.R2_REVEAL);
+      else setPhase(PHASES.R3_REVEAL);
+    }, 300);
+  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase]);
+
+  const nextRound = useCallback(() => {
+    if (phase === PHASES.R1_REVEAL) setPhase(PHASES.R2_COMMUNAL);
+    else if (phase === PHASES.R2_REVEAL) setPhase(PHASES.R3_COMMUNAL);
+    else {
+      let playerWonGame = playerScore > aiScore;
+      if (playerScore === aiScore) {
+        const pl = [...playerHand].sort((a,b) => b.value - a.value);
+        const al = [...aiHand].sort((a,b) => b.value - a.value);
+        let tw = "tie";
+        for (let i = 0; i < Math.max(pl.length, al.length); i++) {
+          const pv = pl[i]?.value||0, av = al[i]?.value||0;
+          if (pv > av) { tw = "player"; break; } if (av > pv) { tw = "ai"; break; }
+        }
+        setTiebreaker({ winner: tw, playerCards: pl, aiCards: al });
+        if (tw === "player") { setPlayerScore(s => s + 1); playerWonGame = true; }
+        else if (tw === "ai") setAiScore(s => s + 1);
+      }
+      setShowAiCards(true); setPhase(PHASES.GAME_OVER);
+      observeGameEnd(opponentModelRef.current, playerWonGame);
+    }
+  }, [phase, playerScore, aiScore, playerHand, aiHand]);
+
+  const isDiscard = phase.includes("discard"), isPlay = phase.includes("play"), isReveal = phase.includes("reveal");
+  const currentRound = roundInfo.round;
+
+  // Live hand preview: evaluate what the player's selected cards + communal would make
+  const previewHandRank = useMemo(() => {
+    if (!isPlay || selected.size === 0) return null;
+    const selectedCards = [...selected].map(i => playerHand[i]).filter(Boolean);
+    const previewCards = [...selectedCards, ...communalCards];
+    if (previewCards.length < 2) return null;
+    try {
+      if (previewCards.length === 3) return evaluate3CardHand(previewCards).rank;
+      if (previewCards.length >= 5) return evaluateBest5(previewCards).rank;
+      // For partial hands (4 cards in R2), evaluate what we can
+      if (previewCards.length === 4) return evaluate5CardHand ? null : null;
+      return null;
+    } catch(e) { return null; }
+  }, [isPlay, selected, playerHand, communalCards]);
+
+  // Also compute the full preview eval name for display
+  const previewHandEval = useMemo(() => {
+    if (!isPlay) return null;
+    const selectedCards = [...selected].map(i => playerHand[i]).filter(Boolean);
+    const previewCards = [...selectedCards, ...communalCards];
+    if (selectedCards.length !== roundInfo.cardsToPlay) return null;
+    try {
+      if (previewCards.length === 3) return evaluate3CardHand(previewCards);
+      if (previewCards.length >= 5) return evaluateBest5(previewCards);
+      return null;
+    } catch(e) { return null; }
+  }, [isPlay, selected, playerHand, communalCards, roundInfo.cardsToPlay]);
+
+  const btn = (bg, border) => ({
+    padding: "12px 28px", borderRadius: 8, border: `1px solid ${border || "rgba(255,255,255,0.15)"}`,
+    background: bg || "rgba(255,255,255,0.08)", color: "#fff", fontSize: 15, fontWeight: 600,
+    cursor: "pointer", fontFamily: "'Segoe UI', sans-serif", letterSpacing: 0.3, transition: "all 0.2s",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+    minHeight: 44, touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
+  });
+
+  // For overlapping cards: selected cards keep their natural z-index (based on position)
+  // so they slide up but stay behind the card to their right
+  const getCardZ = (i, isSelected) => {
+    // Each card gets z-index based on its position (left to right = higher)
+    // Selected cards do NOT get a z-index boost
+    return i + 1;
+  };
+
+  return (
+    <div style={{ width: "100%", height: "100dvh", display: "flex", background: "#0a2912", fontFamily: "'Segoe UI', 'Helvetica Neue', sans-serif", overflow: "hidden", touchAction: "none", overscrollBehavior: "none" }}>
+      <SidePanel {...{ phase, currentRound, roundInfo, playerScore, aiScore, roundResults, previewHandRank, previewHandEval, aiDiscardCounts }} collapsed={!sidebarOpen} onToggle={() => setSidebarOpen(s => !s)} />
+
+      <div style={{
+        flex: 1, display: "flex", flexDirection: "column", position: "relative", padding: "8px 16px",
+        background: "radial-gradient(ellipse at center, #1a5c2a 0%, #0f3d1a 50%, #0a2912 100%)",
+        color: "#f0e6d3", overflow: "hidden", minHeight: 0,
+      }}>
+
+        {/* Rules info button — top right */}
+        <button
+          onClick={() => setShowRules(true)}
+          onTouchEnd={(e) => { e.preventDefault(); setShowRules(true); }}
+          style={{
+            position: "absolute", top: 10, right: 10, zIndex: 20,
+            width: 36, height: 36, borderRadius: "50%",
+            background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)",
+            color: "#f0e6d3", fontSize: 18, fontWeight: 700,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", touchAction: "manipulation",
+            WebkitTapHighlightColor: "transparent",
+            fontFamily: "'Georgia', serif", lineHeight: 1,
+          }}
+        >?</button>
+
+        {/* Rules Modal */}
+        {showRules && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 100,
+            background: "rgba(0,0,0,0.85)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 16,
+          }}
+            onClick={() => setShowRules(false)}
+            onTouchEnd={(e) => { e.preventDefault(); setShowRules(false); }}
+          >
+            <div
+              style={{
+                background: "linear-gradient(180deg, #1a3a22 0%, #12291a 100%)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                borderRadius: 16, padding: "24px 20px", maxWidth: 420, width: "100%",
+                maxHeight: "85vh", overflowY: "auto", WebkitOverflowScrolling: "touch",
+                color: "#e8e0cc", fontFamily: "'Segoe UI', sans-serif",
+                boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+              }}
+              data-scrollable
+              onClick={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <div style={{
+                  fontSize: 20, fontWeight: 700, fontFamily: "'Georgia', serif",
+                  background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)",
+                  WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+                }}>How to Play</div>
+                <button
+                  onClick={() => setShowRules(false)}
+                  onTouchEnd={(e) => { e.preventDefault(); setShowRules(false); }}
+                  style={{
+                    background: "none", border: "1px solid rgba(255,255,255,0.15)",
+                    borderRadius: 6, color: "#f0e6d3", fontSize: 16, cursor: "pointer",
+                    padding: "4px 10px", touchAction: "manipulation",
+                  }}
+                >\u2715</button>
+              </div>
+
+              <div style={{ fontSize: 13, lineHeight: 1.8, opacity: 0.9 }}>
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Overview</div>
+                <p style={{ marginBottom: 12 }}>
+                  Slow Burn Poker is a 3-round card strategy game against an AI opponent.
+                  You each receive 10 cards. Each round, you select cards from your hand to
+                  combine with a shared card in The Pot to form the best poker hand.
+                  Stakes escalate each round — plan ahead or burn out early.
+                </p>
+
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Each Round</div>
+                <p style={{ marginBottom: 6 }}>
+                  <span style={{ color: "#e74c3c", fontWeight: 600 }}>1. A shared card</span> is added to The Pot (visible to both players).
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  <span style={{ color: "#e74c3c", fontWeight: 600 }}>2. Discard phase:</span> Swap up to 3 cards from your hand for new ones from the deck. Or keep all if you're happy.
+                </p>
+                <p style={{ marginBottom: 12 }}>
+                  <span style={{ color: "#e74c3c", fontWeight: 600 }}>3. Play phase:</span> Select cards from your hand to play. They combine with The Pot to form your poker hand.
+                </p>
+
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Round Structure</div>
+                <p style={{ marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600 }}>Round I</span> — Play 2 cards + 1 pot card = 3-card hand (1 pt base)
+                </p>
+                <p style={{ marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600 }}>Round II</span> — Play 3 cards + 2 pot cards = best 5 of 5 (2 pts base)
+                </p>
+                <p style={{ marginBottom: 12 }}>
+                  <span style={{ fontWeight: 600 }}>Round III</span> — Play 4 cards + 3 pot cards = best 5 of 7 (3 pts base)
+                </p>
+
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Scoring</div>
+                <p style={{ marginBottom: 12 }}>
+                  The winner of each round earns the base points plus a bonus equal to the
+                  difference in hand rank (e.g. a Flush beating a Pair earns extra).
+                  If scores are tied after 3 rounds, leftover cards break the tie.
+                </p>
+
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Strategy Tips</div>
+                <p style={{ marginBottom: 6 }}>
+                  \u2022 Round III is worth the most — don't burn your best cards early.
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  \u2022 Watch the Foe's discard count — if they keep all cards, they're confident.
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  \u2022 The Pot cards are shared — build hands that synergize with what's showing.
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  \u2022 Use the live hand preview to see your hand rank as you select cards.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Start */}
+        {phase === PHASES.START && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20, zIndex: 1 }}>
+            <div style={{
+              fontSize: 36, fontWeight: 700, fontFamily: "'Georgia', serif",
+              background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)",
+              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+            }}>SLOW BURN POKER</div>
+            <div style={{ fontSize: 14, opacity: 0.6, maxWidth: 380, textAlign: "center", lineHeight: 1.6 }}>
+              Three rounds. Rising stakes. Every discard is a gamble, every card played is a commitment. The final round decides it all.
+            </div>
+            <button onClick={startGame} style={btn("#27ae60", "#2ecc71")}>Deal Cards</button>
+          </div>
+        )}
+
+        {/* Game Over */}
+        {phase === PHASES.GAME_OVER && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, zIndex: 1 }}>
+            <div style={{
+              fontSize: 36, fontWeight: 700, fontFamily: "'Georgia', serif",
+              color: playerScore > aiScore ? "#2ecc71" : aiScore > playerScore ? "#e74c3c" : "#f1c40f",
+            }}>
+              {playerScore > aiScore ? "VICTORY!" : aiScore > playerScore ? "DEFEAT" : "DRAW"}
+            </div>
+            <div style={{ fontSize: 16, opacity: 0.7 }}>Final Score: {playerScore} – {aiScore}</div>
+            {tiebreaker && (
+              <div style={{ textAlign: "center", padding: 16, background: "rgba(0,0,0,0.2)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", marginTop: 8 }}>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1, opacity: 0.5, marginBottom: 10 }}>Tiebreaker — Leftover Cards</div>
+                <div style={{ display: "flex", justifyContent: "center", gap: 32, marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4 }}>Yours</div>
+                    <div style={{ display: "flex", gap: 4 }}>{tiebreaker.playerCards.map(c => <Card key={c.id} card={c} small />)}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4 }}>Opponent's</div>
+                    <div style={{ display: "flex", gap: 4 }}>{tiebreaker.aiCards.map(c => <Card key={c.id} card={c} small />)}</div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: tiebreaker.winner === "player" ? "#2ecc71" : tiebreaker.winner === "ai" ? "#e74c3c" : "#f1c40f" }}>
+                  {tiebreaker.winner === "player" ? "Your cards win the tiebreaker! (+1)" : tiebreaker.winner === "ai" ? "Opponent's cards win! (+1)" : "Evenly matched!"}
+                </div>
+              </div>
+            )}
+            <button onClick={startGame} style={btn("#e67e22", "#f39c12")}>Play Again</button>
+          </div>
+        )}
+
+        {/* Active Game */}
+        {phase !== PHASES.START && phase !== PHASES.GAME_OVER && (
+          <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, zIndex: 1, paddingTop: "2vh", paddingBottom: "1vh" }}>
+            {/* Opponent hand */}
+            <div style={{ display: "flex", justifyContent: "center", padding: "4px 0 4px", flexShrink: 0 }}>
+              <div style={{ display: "flex" }}>
+                {aiHand.map((card, i) => <Card key={card.id} card={card} faceDown={!showAiCards} small overlap={i > 0} index={i} />)}
+              </div>
+            </div>
+
+            {/* AI Discard indicator — shown during play phase */}
+            {(isPlay || isReveal) && aiDiscardCounts[currentRound] !== undefined && (
+              <div style={{
+                display: "flex", justifyContent: "center", padding: "2px 0", flexShrink: 0,
+              }}>
+                <div style={{
+                  padding: "3px 12px", borderRadius: 12,
+                  background: aiDiscardCounts[currentRound] === 0 ? "rgba(46,204,113,0.15)" : aiDiscardCounts[currentRound] >= 2 ? "rgba(231,76,60,0.15)" : "rgba(241,196,15,0.12)",
+                  border: `1px solid ${aiDiscardCounts[currentRound] === 0 ? "rgba(46,204,113,0.3)" : aiDiscardCounts[currentRound] >= 2 ? "rgba(231,76,60,0.3)" : "rgba(241,196,15,0.25)"}`,
+                  fontSize: 11, fontWeight: 600,
+                  color: aiDiscardCounts[currentRound] === 0 ? "#2ecc71" : aiDiscardCounts[currentRound] >= 2 ? "#e74c3c" : "#f1c40f",
+                }}>
+                  {aiDiscardCounts[currentRound] === 0
+                    ? "Foe kept all cards"
+                    : `Foe discarded ${aiDiscardCounts[currentRound]} card${aiDiscardCounts[currentRound] > 1 ? "s" : ""}`}
+                </div>
+              </div>
+            )}
+
+
+            {/* Opponent played */}
+            {aiPlayed[currentRound]?.length > 0 && (
+              <div style={{ display: "flex", justifyContent: "center", padding: "2px 0", flexShrink: 0 }}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {aiPlayed[currentRound].map(c => <Card key={c.id} card={c} faceDown={!isReveal && !showAiCards} small />)}
+                </div>
+              </div>
+            )}
+
+            {/* Center: Communal — this is the flexible area */}
+            <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              <div style={{
+                padding: "10px 20px", borderRadius: 14,
+                background: "rgba(0,0,0,0.15)", border: "1px solid rgba(255,255,255,0.06)",
+                minWidth: 240, textAlign: "center",
+              }}>
+                <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", opacity: 0.4, marginBottom: 6 }}>The Pot</div>
+                <div style={{ display: "flex", justifyContent: "center", gap: 10, minHeight: 50 }}>
+                  {communalCards.length === 0 && <div style={{ opacity: 0.2, fontSize: 13, alignSelf: "center" }}>Shared cards appear here</div>}
+                  {communalCards.map(c => <Card key={c.id} card={c} glowing />)}
+                </div>
+              </div>
+
+              {/* Round result banner — between communal and played cards */}
+              {isReveal && roundResults.length > 0 && (() => {
+                const r = roundResults[roundResults.length - 1];
+                return (
+                  <div style={{
+                    padding: "6px 16px", borderRadius: 10, textAlign: "center", flexShrink: 0, alignSelf: "center",
+                    background: r.winner === "player" ? "rgba(46,204,113,0.15)" : r.winner === "ai" ? "rgba(231,76,60,0.15)" : "rgba(255,255,255,0.08)",
+                    border: `1px solid ${r.winner === "player" ? "rgba(46,204,113,0.3)" : r.winner === "ai" ? "rgba(231,76,60,0.3)" : "rgba(255,255,255,0.12)"}`,
+                  }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 1 }}>
+                      {r.winner === "player" ? "Round Won!" : r.winner === "ai" ? "Round Lost" : "A Tie!"}
+                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.7 }}>
+                      {r.pEval.name} vs {r.aEval.name}
+                      {r.points > 0 && <span style={{ color: "#f1c40f" }}> · {r.points} pt{r.points>1?"s":""}</span>}
+                      {r.bonus > 0 && <span style={{ opacity: 0.6 }}> ({r.basePoints}+{r.bonus})</span>}
+                    </div>
+                  </div>
+                );
+              })()}
+
+            </div>
+
+
+            {/* Player played */}
+            {playerPlayed[currentRound]?.length > 0 && (
+              <div style={{ display: "flex", justifyContent: "center", padding: "2px 0", flexShrink: 0 }}>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {playerPlayed[currentRound].map(c => <Card key={c.id} card={c} small />)}
+                </div>
+              </div>
+            )}
+
+            {/* Live hand preview */}
+            {isPlay && previewHandEval && (
+              <div style={{ display: "flex", justifyContent: "center", padding: "2px 0", flexShrink: 0 }}>
+                <div style={{
+                  padding: "3px 14px", borderRadius: 12,
+                  background: "rgba(241,196,15,0.12)", border: "1px solid rgba(241,196,15,0.25)",
+                  fontSize: 12, fontWeight: 700, color: "#f1c40f", letterSpacing: 0.5,
+                }}>
+                  {previewHandEval.name}
+                </div>
+              </div>
+            )}
+
+            {/* Player hand */}
+            <div style={{ padding: "6px 0 0", flexShrink: 0 }}>
+              <div style={{ textAlign: "center", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, opacity: 0.5, marginBottom: 4 }}>
+                Your Hand ({playerHand.length})
+                {isDiscard && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select up to {roundInfo.maxDiscard} to discard</span>}
+                {isPlay && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select {roundInfo.cardsToPlay} to play</span>}
+              </div>
+              <div style={{ display: "flex", justifyContent: "center" }}>
+                {playerHand.map((card, i) => (
+                  <Card
+                    key={card.id} card={card} selected={selected.has(i)}
+                    selectable={isDiscard || isPlay} onClick={() => toggleSelect(i)}
+                    overlap={i > 0} index={i}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Buttons — always pinned at bottom */}
+            <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "8px 0 6px", flexShrink: 0 }}>
+              {isDiscard && (
+                <button onClick={confirmDiscard} style={btn("#27ae60", "#2ecc71")}>
+                  {selected.size === 0 ? "Keep All" : `Discard ${selected.size}`}
+                </button>
+              )}
+              {isPlay && (
+                <button onClick={confirmPlay} disabled={selected.size !== roundInfo.cardsToPlay}
+                  style={{
+                    ...btn(selected.size === roundInfo.cardsToPlay ? "#2980b9" : "#555",
+                           selected.size === roundInfo.cardsToPlay ? "#3498db" : "#666"),
+                    opacity: selected.size === roundInfo.cardsToPlay ? 1 : 0.5,
+                  }}>
+                  Play {roundInfo.cardsToPlay} Cards
+                </button>
+              )}
+              {isReveal && (
+                <button onClick={nextRound} style={btn("#8e44ad", "#9b59b6")}>
+                  {phase === PHASES.R3_REVEAL ? "See Final Results" : "Next Round →"}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.render(<CommunalPoker />, document.getElementById("root"));
+
+// iPad/iOS touch optimizations
+document.addEventListener('touchmove', function(e) {
+  if (!e.target.closest('[data-scrollable]')) {
+    e.preventDefault();
+  }
+}, { passive: false });
+document.addEventListener('touchstart', function(){}, { passive: true });
+</script>
+</body>
+</html>
