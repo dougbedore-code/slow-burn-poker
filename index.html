@@ -32,70 +32,15 @@ const { useState, useCallback, useMemo, useEffect, useRef } = React;
 const SUITS = ["spades", "hearts", "diamonds", "clubs"];
 
 // ─── Card Asset Loader ──────────────────────────────────────────────────────
-const CARD_ASSETS = { numbers: {}, suits: {}, cardBg: null, loaded: false };
+const CARD_ASSETS = { suits: {}, loaded: false };
 
 function loadCardAssets() {
   return new Promise((resolve) => {
-    let loaded = 0;
-    const total = 2;
-    const numImg = new Image();
     const suitImg = new Image();
 
-    function onLoad() {
-      loaded++;
-      if (loaded < total) return;
-
+    suitImg.onload = function() {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
-
-      // Slice number sprite: 5 cols x 6 rows (top 3 red, bottom 3 black)
-      const numCellW = Math.floor(numImg.width / 5);
-      const numCellH = Math.floor(numImg.height / 6);
-      const valueGrid = [
-        [14, 13, 12, 11, 10],  // A, K, Q, J, 10
-        [9, 8, 7, 6, 5],       // 9, 8, 7, 6, 5  (first cell might be duplicate 9, we map it anyway)
-        [4, 3, 2, null, null],  // 4, 3, 2, (skip last 2)
-      ];
-      const colorMap = { 0: "red", 3: "black" }; // row offset -> color name
-
-      for (const [rowOffset, colorName] of Object.entries(colorMap)) {
-        const ro = parseInt(rowOffset);
-        for (let gridRow = 0; gridRow < 3; gridRow++) {
-          for (let col = 0; col < 5; col++) {
-            const val = valueGrid[gridRow][col];
-            if (val === null) continue;
-            const srcRow = ro + gridRow;
-
-            // Extract cell
-            canvas.width = numCellW;
-            canvas.height = numCellH;
-            ctx.clearRect(0, 0, numCellW, numCellH);
-            ctx.drawImage(numImg, col * numCellW, srcRow * numCellH, numCellW, numCellH, 0, 0, numCellW, numCellH);
-
-            // Auto-trim transparent edges
-            const idata = ctx.getImageData(0, 0, numCellW, numCellH);
-            const d = idata.data;
-            let minX = numCellW, minY = numCellH, maxX = 0, maxY = 0;
-            for (let y = 0; y < numCellH; y++) {
-              for (let x = 0; x < numCellW; x++) {
-                if (d[(y * numCellW + x) * 4 + 3] > 30) {
-                  minX = Math.min(minX, x); minY = Math.min(minY, y);
-                  maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-                }
-              }
-            }
-            if (maxX > minX && maxY > minY) {
-              const tw = maxX - minX + 1, th = maxY - minY + 1;
-              const trimmed = ctx.getImageData(minX, minY, tw, th);
-              canvas.width = tw;
-              canvas.height = th;
-              ctx.putImageData(trimmed, 0, 0);
-            }
-
-            CARD_ASSETS.numbers[val + "-" + colorName] = canvas.toDataURL("image/png");
-          }
-        }
-      }
 
       // Slice suit sprite: 2x2 grid
       const suitCellW = Math.floor(suitImg.width / 2);
@@ -135,11 +80,8 @@ function loadCardAssets() {
 
       CARD_ASSETS.loaded = true;
       resolve(CARD_ASSETS);
-    }
+    };
 
-    numImg.onload = onLoad;
-    suitImg.onload = onLoad;
-    numImg.src = "num-sht.png";
     suitImg.src = "suit-sht.png";
   });
 }
@@ -784,15 +726,12 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
   const isWild = card.wild && !faceDown;
   const isNormal = !faceDown && !card.wild;
 
-  // Determine color key for number sprite: red for hearts/diamonds, black for spades/clubs
-  const numColor = (card.suit === "hearts" || card.suit === "diamonds") ? "red" : "black";
-  const numSrc = CARD_ASSETS.loaded ? CARD_ASSETS.numbers[card.value + "-" + numColor] : null;
+  const color = SUIT_COLORS[card.suit];
+  const label = VALUE_NAMES[card.value];
   const suitSrc = CARD_ASSETS.loaded ? CARD_ASSETS.suits[card.suit] : null;
 
-  // Sizing for number and suit images
-  const numH = small ? 16 : 22;
   const cornerSuitH = small ? 10 : 14;
-  const centerSuitH = small ? 28 : 44;
+  const centerSuitH = small ? 32 : 50;
   const pad = small ? 4 : 6;
 
   return (
@@ -853,24 +792,30 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
       ) : (
         <>
           {/* Top-left: value + suit */}
-          <div style={{ position: "absolute", top: pad, left: pad, display: "flex", flexDirection: "column", alignItems: "center", gap: 0 }}>
-            {numSrc && <img src={numSrc} style={{ height: numH, display: "block" }} draggable={false} />}
-            {suitSrc && <img src={suitSrc} style={{ height: cornerSuitH, display: "block", marginTop: -1 }} draggable={false} />}
+          <div style={{ position: "absolute", top: pad, left: pad, display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1 }}>
+            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
+            {suitSrc ? <img src={suitSrc} style={{ height: cornerSuitH, display: "block", marginTop: 0 }} draggable={false} />
+              : <span style={{ fontSize: small ? 11 : 14, color, marginTop: -1 }}>{SUIT_SYMBOLS[card.suit]}</span>}
           </div>
 
           {/* Center: large suit */}
-          {suitSrc && (
+          {suitSrc ? (
             <img src={suitSrc} style={{
               position: "absolute", top: "50%", left: "50%",
               transform: "translate(-50%, -50%)",
-              height: centerSuitH, opacity: 0.3,
+              height: centerSuitH, opacity: 0.7,
             }} draggable={false} />
+          ) : (
+            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", fontSize: small ? 28 : 42, color, opacity: 0.5, lineHeight: 1 }}>
+              {SUIT_SYMBOLS[card.suit]}
+            </div>
           )}
 
           {/* Bottom-right: value + suit (rotated 180) */}
-          <div style={{ position: "absolute", bottom: pad, right: pad, display: "flex", flexDirection: "column", alignItems: "center", gap: 0, transform: "rotate(180deg)" }}>
-            {numSrc && <img src={numSrc} style={{ height: numH, display: "block" }} draggable={false} />}
-            {suitSrc && <img src={suitSrc} style={{ height: cornerSuitH, display: "block", marginTop: -1 }} draggable={false} />}
+          <div style={{ position: "absolute", bottom: pad, right: pad, display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)" }}>
+            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
+            {suitSrc ? <img src={suitSrc} style={{ height: cornerSuitH, display: "block", marginTop: 0 }} draggable={false} />
+              : <span style={{ fontSize: small ? 11 : 14, color, marginTop: -1 }}>{SUIT_SYMBOLS[card.suit]}</span>}
           </div>
 
           {/* Blocked indicator */}
