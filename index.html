@@ -12,7 +12,7 @@
   html, body, #root { width: 100%; height: 100%; overflow: hidden; }
   html { touch-action: manipulation; }
   body {
-    background: #0a2912;
+    background: #0a0a0a;
     -webkit-user-select: none; user-select: none;
     -webkit-touch-callout: none;
     overscroll-behavior: none;
@@ -30,9 +30,122 @@
 const { useState, useCallback, useMemo, useEffect, useRef } = React;
 
 const SUITS = ["spades", "hearts", "diamonds", "clubs"];
-const SUIT_SYMBOLS = { spades: "♠", hearts: "♥", diamonds: "♦", clubs: "♣" };
-const SUIT_COLORS = { spades: "#1a1a2e", hearts: "#c0392b", diamonds: "#c0392b", clubs: "#1a1a2e" };
-const VALUE_NAMES = { 2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A" };
+
+// ─── Card Asset Loader ──────────────────────────────────────────────────────
+const CARD_ASSETS = { numbers: {}, suits: {}, cardBg: null, loaded: false };
+
+function loadCardAssets() {
+  return new Promise((resolve) => {
+    let loaded = 0;
+    const total = 2;
+    const numImg = new Image();
+    const suitImg = new Image();
+
+    function onLoad() {
+      loaded++;
+      if (loaded < total) return;
+
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+
+      // Slice number sprite: 5 cols x 6 rows (top 3 red, bottom 3 black)
+      const numCellW = Math.floor(numImg.width / 5);
+      const numCellH = Math.floor(numImg.height / 6);
+      const valueGrid = [
+        [14, 13, 12, 11, 10],  // A, K, Q, J, 10
+        [9, 8, 7, 6, 5],       // 9, 8, 7, 6, 5  (first cell might be duplicate 9, we map it anyway)
+        [4, 3, 2, null, null],  // 4, 3, 2, (skip last 2)
+      ];
+      const colorMap = { 0: "red", 3: "black" }; // row offset -> color name
+
+      for (const [rowOffset, colorName] of Object.entries(colorMap)) {
+        const ro = parseInt(rowOffset);
+        for (let gridRow = 0; gridRow < 3; gridRow++) {
+          for (let col = 0; col < 5; col++) {
+            const val = valueGrid[gridRow][col];
+            if (val === null) continue;
+            const srcRow = ro + gridRow;
+
+            // Extract cell
+            canvas.width = numCellW;
+            canvas.height = numCellH;
+            ctx.clearRect(0, 0, numCellW, numCellH);
+            ctx.drawImage(numImg, col * numCellW, srcRow * numCellH, numCellW, numCellH, 0, 0, numCellW, numCellH);
+
+            // Auto-trim transparent edges
+            const idata = ctx.getImageData(0, 0, numCellW, numCellH);
+            const d = idata.data;
+            let minX = numCellW, minY = numCellH, maxX = 0, maxY = 0;
+            for (let y = 0; y < numCellH; y++) {
+              for (let x = 0; x < numCellW; x++) {
+                if (d[(y * numCellW + x) * 4 + 3] > 30) {
+                  minX = Math.min(minX, x); minY = Math.min(minY, y);
+                  maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+                }
+              }
+            }
+            if (maxX > minX && maxY > minY) {
+              const tw = maxX - minX + 1, th = maxY - minY + 1;
+              const trimmed = ctx.getImageData(minX, minY, tw, th);
+              canvas.width = tw;
+              canvas.height = th;
+              ctx.putImageData(trimmed, 0, 0);
+            }
+
+            CARD_ASSETS.numbers[val + "-" + colorName] = canvas.toDataURL("image/png");
+          }
+        }
+      }
+
+      // Slice suit sprite: 2x2 grid
+      const suitCellW = Math.floor(suitImg.width / 2);
+      const suitCellH = Math.floor(suitImg.height / 2);
+      const suitGrid = [["hearts", "diamonds"], ["clubs", "spades"]];
+
+      for (let row = 0; row < 2; row++) {
+        for (let col = 0; col < 2; col++) {
+          canvas.width = suitCellW;
+          canvas.height = suitCellH;
+          ctx.clearRect(0, 0, suitCellW, suitCellH);
+          ctx.drawImage(suitImg, col * suitCellW, row * suitCellH, suitCellW, suitCellH, 0, 0, suitCellW, suitCellH);
+
+          // Auto-trim
+          const idata = ctx.getImageData(0, 0, suitCellW, suitCellH);
+          const d = idata.data;
+          let minX = suitCellW, minY = suitCellH, maxX = 0, maxY = 0;
+          for (let y = 0; y < suitCellH; y++) {
+            for (let x = 0; x < suitCellW; x++) {
+              if (d[(y * suitCellW + x) * 4 + 3] > 30) {
+                minX = Math.min(minX, x); minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+              }
+            }
+          }
+          if (maxX > minX && maxY > minY) {
+            const tw = maxX - minX + 1, th = maxY - minY + 1;
+            const trimmed = ctx.getImageData(minX, minY, tw, th);
+            canvas.width = tw;
+            canvas.height = th;
+            ctx.putImageData(trimmed, 0, 0);
+          }
+
+          CARD_ASSETS.suits[suitGrid[row][col]] = canvas.toDataURL("image/png");
+        }
+      }
+
+      CARD_ASSETS.loaded = true;
+      resolve(CARD_ASSETS);
+    }
+
+    numImg.onload = onLoad;
+    suitImg.onload = onLoad;
+    numImg.src = "num-sht.png";
+    suitImg.src = "suit-sht.png";
+  });
+}
+const SUIT_SYMBOLS = { spades: "♠", hearts: "♥", diamonds: "♦", clubs: "♣", wild: "★" };
+const SUIT_COLORS = { spades: "#1a1a2e", hearts: "#c0392b", diamonds: "#c0392b", clubs: "#1a1a2e", wild: "#9b59b6" };
+const VALUE_NAMES = { 0:"W",2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A" };
 
 const PHASES = {
   START: "start",
@@ -45,6 +158,7 @@ const PHASES = {
 function createDeck() {
   const deck = [];
   for (const suit of SUITS) for (let v = 2; v <= 14; v++) deck.push({ suit, value: v, id: `${v}-${suit}` });
+  for (let i = 0; i < 4; i++) deck.push({ suit: "wild", value: 0, id: `wild-${i}`, wild: true });
   return deck;
 }
 
@@ -78,7 +192,7 @@ function getValueCounts(cards) {
   return c;
 }
 
-function evaluate3CardHand(cards) {
+function _eval3Natural(cards) {
   const values = cards.map(c => c.value);
   const flush = isFlush(cards), straight = isStraight(values);
   const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
@@ -92,12 +206,38 @@ function evaluate3CardHand(cards) {
   return { rank: 0, name: "High Card", kickers: sorted };
 }
 
-function evaluate5CardHand(cards) {
+// Wild-aware 3-card evaluation
+function evaluate3CardHand(cards) {
+  const wilds = cards.filter(c => c.wild);
+  const naturals = cards.filter(c => !c.wild);
+  const W = wilds.length;
+  if (W === 0) return _eval3Natural(cards);
+  if (W >= 3) return { rank: 5, name: "Straight Flush", kickers: [14] };
+  if (W === 2) {
+    const v = naturals[0].value;
+    if (v >= 12) return { rank: 5, name: "Straight Flush", kickers: [14] };
+    return { rank: 5, name: "Straight Flush", kickers: [v + 2] };
+  }
+  // W === 1: try all 52 substitutions
+  let best = null;
+  for (const s of SUITS) {
+    for (let v = 2; v <= 14; v++) {
+      const ev = _eval3Natural([...naturals, { suit: s, value: v }]);
+      if (!best || compareHands(ev, best) > 0) best = ev;
+    }
+  }
+  return best;
+}
+
+
+
+function _eval5Natural(cards) {
   const values = cards.map(c => c.value);
   const flush = isFlush(cards), straight = isStraight(values);
   const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
   const groups = Object.entries(counts).map(([v, c]) => ({ value: +v, count: c })).sort((a, b) => b.count - a.count || b.value - a.value);
-  const quads = groups.filter(g => g.count === 4), trips = groups.filter(g => g.count === 3), pairs = groups.filter(g => g.count === 2);
+  const fives = groups.filter(g => g.count === 5), quads = groups.filter(g => g.count === 4), trips = groups.filter(g => g.count === 3), pairs = groups.filter(g => g.count === 2);
+  if (fives.length) return { rank: 10, name: "Five of a Kind", kickers: [fives[0].value] };
   if (straight.yes && flush && sorted[0] === 14 && sorted[sorted.length-1] === 10) return { rank: 9, name: "Royal Flush", kickers: [14] };
   if (straight.yes && flush) return { rank: 8, name: "Straight Flush", kickers: [straight.high] };
   if (quads.length) return { rank: 7, name: "Four of a Kind", kickers: [quads[0].value, ...sorted.filter(v => v !== quads[0].value)] };
@@ -109,6 +249,58 @@ function evaluate5CardHand(cards) {
   if (pairs.length === 1) return { rank: 1, name: "One Pair", kickers: [pairs[0].value, ...sorted.filter(v => v !== pairs[0].value)] };
   return { rank: 0, name: "High Card", kickers: sorted };
 }
+
+// Wild-aware 5-card evaluation
+function evaluate5CardHand(cards) {
+  const wilds = cards.filter(c => c.wild);
+  const naturals = cards.filter(c => !c.wild);
+  const W = wilds.length;
+  if (W === 0) return _eval5Natural(cards);
+  if (W >= 5) return { rank: 10, name: "Five of a Kind", kickers: [14] };
+  if (W === 4) return { rank: 10, name: "Five of a Kind", kickers: [naturals[0].value] };
+
+  if (W === 3) {
+    // Analytical approach for 2 naturals + 3 wilds
+    const sorted = [...naturals].sort((a, b) => b.value - a.value);
+    const hi = sorted[0], lo = sorted[1];
+    if (hi.value === lo.value) return { rank: 10, name: "Five of a Kind", kickers: [hi.value] };
+    if (hi.suit === lo.suit) {
+      if (hi.value >= 10 && lo.value >= 10) return { rank: 9, name: "Royal Flush", kickers: [14] };
+      const gap = hi.value - lo.value;
+      if (gap <= 4) {
+        const bestHigh = Math.min(14, lo.value + 4);
+        if (hi.value <= bestHigh && lo.value >= bestHigh - 4) {
+          if (bestHigh === 14 && bestHigh - 4 >= 10) return { rank: 9, name: "Royal Flush", kickers: [14] };
+          return { rank: 8, name: "Straight Flush", kickers: [bestHigh] };
+        }
+      }
+      if (hi.value === 14 && lo.value <= 5) return { rank: 8, name: "Straight Flush", kickers: [5] };
+    }
+    return { rank: 7, name: "Four of a Kind", kickers: [hi.value, lo.value] };
+  }
+
+  // W === 1 or 2: brute force substitutions
+  const subs = [];
+  for (const s of SUITS) for (let v = 2; v <= 14; v++) subs.push({ suit: s, value: v });
+  let best = null;
+  function tryAll(depth, chosen) {
+    if (depth === W) {
+      const hand = [...naturals, ...chosen];
+      const ev = _eval5Natural(hand);
+      if (!best || compareHands(ev, best) > 0) best = ev;
+      return;
+    }
+    for (const sub of subs) {
+      chosen.push(sub);
+      tryAll(depth + 1, chosen);
+      chosen.pop();
+    }
+  }
+  tryAll(0, []);
+  return best;
+}
+
+
 
 function evaluateBest5(cards) {
   if (cards.length <= 5) return evaluate5CardHand(cards);
@@ -318,9 +510,25 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
       }
     }
     
+    // Wild card versatility bonus
+    const wildInKept = kept.filter(c => c.wild).length;
+    const wildInCommunal = communal.filter(c => c.wild).length;
+    score += wildInKept * 12 + wildInCommunal * 6;
+
+    // Wilds boost the best natural group
+    if (wildInKept + wildInCommunal > 0) {
+      const natCounts = {};
+      for (const c of allCards) { if (!c.wild) natCounts[c.value] = (natCounts[c.value] || 0) + 1; }
+      const topGroup = Math.max(...Object.values(natCounts), 0);
+      const effective = topGroup + wildInKept + wildInCommunal;
+      if (effective >= 5) score += 10;
+      else if (effective >= 4) score += 6;
+      else if (effective >= 3) score += 3;
+    }
+
     return score;
   }
-  
+
   let bestDiscard = [];
   let bestScore = evaluateKeepSet(hand, communalCards);
 
@@ -336,6 +544,7 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
 
   // Calculate how "weak" each card in hand is relative to the hand's needs
   function cardWeakness(card, kept, communal) {
+    if (card.wild) return -10; // Wild cards are incredibly valuable, never discard
     let weakness = 0;
     const allCards = [...kept, ...communal];
     const counts = {};
@@ -570,25 +779,38 @@ function getCombinations(n, k) {
 // ─── Card ────────────────────────────────────────────────────────────────────
 function Card({ card, faceDown, selected, selectable, onClick, small, glowing, overlap, index }) {
   if (!card) return null;
-  const color = SUIT_COLORS[card.suit];
-  const symbol = SUIT_SYMBOLS[card.suit];
-  const label = VALUE_NAMES[card.value];
   const w = small ? 58 : 88;
   const h = small ? 80 : 120;
+  const isWild = card.wild && !faceDown;
+  const isNormal = !faceDown && !card.wild;
+
+  // Determine color key for number sprite: red for hearts/diamonds, black for spades/clubs
+  const numColor = (card.suit === "hearts" || card.suit === "diamonds") ? "red" : "black";
+  const numSrc = CARD_ASSETS.loaded ? CARD_ASSETS.numbers[card.value + "-" + numColor] : null;
+  const suitSrc = CARD_ASSETS.loaded ? CARD_ASSETS.suits[card.suit] : null;
+
+  // Sizing for number and suit images
+  const numH = small ? 16 : 22;
+  const cornerSuitH = small ? 10 : 14;
+  const centerSuitH = small ? 28 : 44;
+  const pad = small ? 4 : 6;
 
   return (
     <div
       onClick={selectable ? onClick : undefined}
       onTouchEnd={selectable ? (e) => { e.preventDefault(); onClick && onClick(); } : undefined}
       style={{
-        width: w, height: h, borderRadius: 8, flexShrink: 0,
+        width: w, height: h, borderRadius: small ? 6 : 10, flexShrink: 0,
         marginLeft: overlap ? (small ? -26 : -32) : 0,
-        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : "2px solid rgba(0,0,0,0.15)",
+        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : isWild ? "2px solid #9b59b6" : "1.5px solid rgba(0,0,0,0.2)",
         background: faceDown
           ? "linear-gradient(135deg, #2c3e50 0%, #1a252f 50%, #2c3e50 100%)"
-          : "linear-gradient(145deg, #fefefe 0%, #f0ead6 100%)",
-        display: "flex", flexDirection: "column", justifyContent: "space-between",
-        padding: small ? "4px 5px" : "6px 8px",
+          : isWild
+            ? "linear-gradient(145deg, #f5e6b8 0%, #d4a017 50%, #9b59b6 100%)"
+            : "none",
+        backgroundImage: isNormal ? "url('card-bg.jpg')" : undefined,
+        backgroundSize: isNormal ? "cover" : undefined,
+        backgroundPosition: isNormal ? "center" : undefined,
         cursor: selectable ? "pointer" : "default",
         WebkitTapHighlightColor: "transparent",
         touchAction: "manipulation",
@@ -596,6 +818,8 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
           ? "0 -4px 12px rgba(241,196,15,0.4), 0 4px 10px rgba(0,0,0,0.3)"
           : glowing
           ? "0 0 12px rgba(231,76,60,0.4), 0 4px 10px rgba(0,0,0,0.3)"
+          : isWild
+          ? "0 0 10px rgba(155,89,182,0.3), 0 2px 8px rgba(0,0,0,0.25)"
           : "0 2px 8px rgba(0,0,0,0.25)",
         transition: "all 0.15s ease",
         transform: selected ? "translateY(-16px)" : "none",
@@ -605,26 +829,59 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
     >
       {faceDown ? (
         <div style={{
-          position: "absolute", inset: 5, borderRadius: 4,
+          position: "absolute", inset: small ? 3 : 5, borderRadius: small ? 3 : 6,
           border: "1.5px solid rgba(255,255,255,0.08)",
           background: "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.03) 4px, rgba(255,255,255,0.03) 8px)",
           display: "flex", alignItems: "center", justifyContent: "center",
         }}>
           <span style={{ fontSize: small ? 18 : 26, opacity: 0.15 }}>♠</span>
         </div>
+      ) : isWild ? (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1, padding: pad }}>
+            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color: "#9b59b6", fontFamily: "'Georgia', serif" }}>W</span>
+            <span style={{ fontSize: small ? 13 : 16, color: "#9b59b6", marginTop: -1 }}>★</span>
+          </div>
+          <div style={{ fontSize: small ? 24 : 36, textAlign: "center", color: "#9b59b6", lineHeight: 1, opacity: 0.35, position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)" }}>
+            ★
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)", padding: pad, position: "absolute", bottom: 0, right: 0 }}>
+            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color: "#9b59b6", fontFamily: "'Georgia', serif" }}>W</span>
+            <span style={{ fontSize: small ? 13 : 16, color: "#9b59b6", marginTop: -1 }}>★</span>
+          </div>
+        </>
       ) : (
         <>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1 }}>
-            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
-            <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
+          {/* Top-left: value + suit */}
+          <div style={{ position: "absolute", top: pad, left: pad, display: "flex", flexDirection: "column", alignItems: "center", gap: 0 }}>
+            {numSrc && <img src={numSrc} style={{ height: numH, display: "block" }} draggable={false} />}
+            {suitSrc && <img src={suitSrc} style={{ height: cornerSuitH, display: "block", marginTop: -1 }} draggable={false} />}
           </div>
-          <div style={{ fontSize: small ? 24 : 36, textAlign: "center", color, lineHeight: 1, opacity: 0.35 }}>
-            {symbol}
+
+          {/* Center: large suit */}
+          {suitSrc && (
+            <img src={suitSrc} style={{
+              position: "absolute", top: "50%", left: "50%",
+              transform: "translate(-50%, -50%)",
+              height: centerSuitH, opacity: 0.3,
+            }} draggable={false} />
+          )}
+
+          {/* Bottom-right: value + suit (rotated 180) */}
+          <div style={{ position: "absolute", bottom: pad, right: pad, display: "flex", flexDirection: "column", alignItems: "center", gap: 0, transform: "rotate(180deg)" }}>
+            {numSrc && <img src={numSrc} style={{ height: numH, display: "block" }} draggable={false} />}
+            {suitSrc && <img src={suitSrc} style={{ height: cornerSuitH, display: "block", marginTop: -1 }} draggable={false} />}
           </div>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)" }}>
-            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
-            <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
-          </div>
+
+          {/* Blocked indicator */}
+          {card.blocked && (
+            <div style={{
+              position: "absolute", top: 2, right: 2,
+              background: "rgba(231,76,60,0.9)", color: "#fff",
+              fontSize: 7, padding: "1px 4px", borderRadius: "0 6px 0 4px",
+              fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase",
+            }}>Blocked</div>
+          )}
         </>
       )}
     </div>
@@ -806,8 +1063,8 @@ function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, round
           </div>
         ) : (
           <div style={{ fontSize: 10, lineHeight: 1.6 }}>
-            {["Royal Flush","Str. Flush","Four Kind","Full House","Flush","Straight","Three Kind","Two Pair","One Pair","High Card"].map((h,i) => {
-              const rank = 9 - i; // 5-card ranks: RF=9, SF=8, Four=7, FH=6, Fl=5, St=4, Three=3, 2P=2, 1P=1, HC=0
+            {["5 of a Kind","Royal Flush","Str. Flush","Four Kind","Full House","Flush","Straight","Three Kind","Two Pair","One Pair","High Card"].map((h,i) => {
+              const rank = 10 - i; // 5-card ranks: RF=9, SF=8, Four=7, FH=6, Fl=5, St=4, Three=3, 2P=2, 1P=1, HC=0
               const isActive = previewHandRank !== null && previewHandRank === rank;
               return (
                 <div key={i} style={{
@@ -847,7 +1104,16 @@ function CommunalPoker() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [aiDiscardCounts, setAiDiscardCounts] = useState([]);
   const [showRules, setShowRules] = useState(false);
+  const [usedPowers, setUsedPowers] = useState(new Set());
+  const [activePower, setActivePower] = useState(null);
+  const [swapMode, setSwapMode] = useState(null);
+  const [swapHandIdx, setSwapHandIdx] = useState(null);
   const opponentModelRef = useRef(createOpponentModel());
+  const [assetsLoaded, setAssetsLoaded] = useState(false);
+
+  useEffect(() => {
+    loadCardAssets().then(() => setAssetsLoaded(true));
+  }, []);
 
   const startGame = useCallback(() => {
     const d = shuffle(createDeck());
@@ -858,6 +1124,7 @@ function CommunalPoker() {
     setSelected(new Set()); setPlayerScore(0); setAiScore(0);
     setRoundResults([]); setShowAiCards(false); setTiebreaker(null);
     setAiDiscardCounts([]);
+    setUsedPowers(new Set()); setActivePower(null); setSwapMode(null); setSwapHandIdx(null);
     setPhase(PHASES.R1_COMMUNAL); setMessage("");
   }, []);
 
@@ -870,14 +1137,64 @@ function CommunalPoker() {
   }, [phase]);
 
   const toggleSelect = useCallback((idx) => {
+    if (swapMode === "select_hand" || swapMode === "hand_selected") {
+      setSwapHandIdx(idx);
+      setSwapMode("hand_selected");
+      setMessage("Now tap a card in The Pot to complete the swap.");
+      return;
+    }
     setSelected(prev => { const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n; });
+  }, [swapMode]);
+
+  const activatePower = useCallback((powerId) => {
+    if (usedPowers.has(powerId)) return;
+    if (powerId === "card_swap" && phase.includes("discard")) {
+      setActivePower("card_swap");
+      setSwapMode("select_hand");
+      setSwapHandIdx(null);
+      setSelected(new Set());
+      setMessage("Card Swap activated! Select a card from your hand.");
+    } else if (powerId === "wild_blocker" && phase.includes("play")) {
+      if (activePower === "wild_blocker") {
+        setActivePower(null);
+        setMessage("");
+      } else {
+        setActivePower("wild_blocker");
+        setMessage("Wild Blocker armed! Play your cards to neutralize a foe's wild.");
+      }
+    }
+  }, [usedPowers, phase, activePower]);
+
+  const handlePotCardClick = useCallback((potIdx) => {
+    if (swapMode !== "hand_selected" || swapHandIdx === null) return;
+    const newHand = [...playerHand];
+    const newCommunal = [...communalCards];
+    const handCard = newHand[swapHandIdx];
+    const potCard = newCommunal[potIdx];
+    newHand[swapHandIdx] = potCard;
+    newCommunal[potIdx] = handCard;
+    setPlayerHand(newHand.sort((a, b) => b.value - a.value));
+    setCommunalCards(newCommunal);
+    setUsedPowers(prev => new Set([...prev, "card_swap"]));
+    setActivePower(null);
+    setSwapMode(null);
+    setSwapHandIdx(null);
+    setSelected(new Set());
+    setMessage("Card Swap complete! Swapped " + VALUE_NAMES[handCard.value] + SUIT_SYMBOLS[handCard.suit] + " with " + VALUE_NAMES[potCard.value] + SUIT_SYMBOLS[potCard.suit] + ".");
+  }, [swapMode, swapHandIdx, playerHand, communalCards]);
+
+  const cancelSwap = useCallback(() => {
+    setActivePower(null);
+    setSwapMode(null);
+    setSwapHandIdx(null);
+    setMessage("");
   }, []);
 
   const placeCommunal = useCallback(() => {
     const nd = [...deck]; const card = nd.shift(); setDeck(nd);
     setCommunalCards(prev => [...prev, card]); setSelected(new Set()); setShowAiCards(false);
     const rn = phase === PHASES.R1_COMMUNAL ? 1 : phase === PHASES.R2_COMMUNAL ? 2 : 3;
-    setMessage(`Round ${rn}: A communal card is revealed!`);
+    setMessage(`Round ${rn}: ${card.wild ? 'A Wild Card enters The Pot!' : 'A new card enters The Pot!'}`);
     setTimeout(() => {
       if (phase === PHASES.R1_COMMUNAL) setPhase(PHASES.R1_DISCARD);
       else if (phase === PHASES.R2_COMMUNAL) setPhase(PHASES.R2_DISCARD);
@@ -919,7 +1236,25 @@ function CommunalPoker() {
     const pi = [...selected];
     const pp = pi.map(i => playerHand[i]), nph = playerHand.filter((_, i) => !selected.has(i));
     const ai = aiSelectCards(aiHand, communalCards, cardsToPlay, round, opponentModelRef.current);
-    const ap = ai.map(i => aiHand[i]), nah = aiHand.filter((_, i) => !ai.includes(i));
+    let ap = ai.map(i => aiHand[i]);
+    const nah = aiHand.filter((_, i) => !ai.includes(i));
+    // Wild Blocker: transform one AI wild card into a random standard card
+    let blockerMsg = "";
+    if (activePower === "wild_blocker") {
+      const aiWildIdx = ap.findIndex(c => c.wild);
+      if (aiWildIdx !== -1) {
+        const rSuit = SUITS[Math.floor(Math.random() * 4)];
+        const rVal = Math.floor(Math.random() * 13) + 2;
+        const newCard = { suit: rSuit, value: rVal, id: "blocked-" + rSuit + "-" + rVal, blocked: true };
+        ap = [...ap];
+        ap[aiWildIdx] = newCard;
+        blockerMsg = " Wild Blocker turned foe's Wild into " + VALUE_NAMES[rVal] + SUIT_SYMBOLS[rSuit] + "!";
+      } else {
+        blockerMsg = " Wild Blocker had no effect — no foe wilds played.";
+      }
+      setUsedPowers(prev => new Set([...prev, "wild_blocker"]));
+      setActivePower(null);
+    }
     const npp = [...playerPlayed]; npp[round] = pp;
     const nap = [...aiPlayed]; nap[round] = ap;
     
@@ -946,13 +1281,14 @@ function CommunalPoker() {
     observeHandResult(opponentModelRef.current, round, pe.rank);
     setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff }]); setShowAiCards(true);
     const bonusText = rankDiff > 0 ? ` (${points} base + ${rankDiff} bonus)` : "";
-    setMessage(w === "player" ? `You win! +${totalPoints}pt${totalPoints>1?"s":""}${bonusText}` : w === "ai" ? `Opponent wins! +${totalPoints}pt${totalPoints>1?"s":""}${bonusText}` : "A tie!");
+    const baseMsg = w === "player" ? `You win! +${totalPoints}pt${totalPoints>1?"s":""}${bonusText}` : w === "ai" ? `Opponent wins! +${totalPoints}pt${totalPoints>1?"s":""}${bonusText}` : "A tie!";
+    setMessage(baseMsg + blockerMsg);
     setTimeout(() => {
       if (phase === PHASES.R1_PLAY) setPhase(PHASES.R1_REVEAL);
       else if (phase === PHASES.R2_PLAY) setPhase(PHASES.R2_REVEAL);
       else setPhase(PHASES.R3_REVEAL);
     }, 300);
-  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase]);
+  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase, activePower]);
 
   const nextRound = useCallback(() => {
     if (phase === PHASES.R1_REVEAL) setPhase(PHASES.R2_COMMUNAL);
@@ -1024,14 +1360,25 @@ function CommunalPoker() {
   };
 
   return (
-    <div style={{ width: "100%", height: "100dvh", display: "flex", background: "#0a2912", fontFamily: "'Segoe UI', 'Helvetica Neue', sans-serif", overflow: "hidden", touchAction: "none", overscrollBehavior: "none" }}>
+    <div style={{ width: "100%", height: "100dvh", display: "flex", background: "#0a0a0a", fontFamily: "'Segoe UI', 'Helvetica Neue', sans-serif", overflow: "hidden", touchAction: "none", overscrollBehavior: "none" }}>
       <SidePanel {...{ phase, currentRound, roundInfo, playerScore, aiScore, roundResults, previewHandRank, previewHandEval, aiDiscardCounts }} collapsed={!sidebarOpen} onToggle={() => setSidebarOpen(s => !s)} />
 
       <div style={{
         flex: 1, display: "flex", flexDirection: "column", position: "relative", padding: "8px 16px",
-        background: "radial-gradient(ellipse at center, #1a5c2a 0%, #0f3d1a 50%, #0a2912 100%)",
+        backgroundImage: "url('table-bg.jpg')",
+        backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat",
         color: "#f0e6d3", overflow: "hidden", minHeight: 0,
       }}>
+
+        {/* Loading overlay */}
+        {!assetsLoaded && phase !== PHASES.START && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 50,
+            background: "rgba(10,10,10,0.9)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            color: "#f0e6d3", fontSize: 16, fontFamily: "'Georgia', serif",
+          }}>Loading card assets...</div>
+        )}
 
         {/* Rules info button — top right */}
         <button
@@ -1128,6 +1475,30 @@ function CommunalPoker() {
                   If scores are tied after 3 rounds, leftover cards break the tie.
                 </p>
 
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Wild Cards</div>
+                <p style={{ marginBottom: 12 }}>
+                  The deck includes 4 Wild Cards (marked with \u2605). A Wild Card can stand in
+                  for any card, automatically forming the best possible hand. They can appear in
+                  your hand or in The Pot. With wilds, Five of a Kind becomes possible — the
+                  highest-ranking hand in the game!
+                </p>
+
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Special Powers</div>
+                <p style={{ marginBottom: 6 }}>
+                  You start each game with two power cards, shown to the right of your hand.
+                  Each can be used once per game. Once played, they're gone for the rest of that game.
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  <span style={{ color: "#9b59b6", fontWeight: 600 }}>⊘ Wild Blocker:</span> Activate during the Play phase.
+                  When hands are revealed, one of the foe's wild cards is transformed into a random
+                  standard card. If the foe played no wilds, the power has no effect but is still expended.
+                </p>
+                <p style={{ marginBottom: 12 }}>
+                  <span style={{ color: "#3498db", fontWeight: 600 }}>⇄ Card Swap:</span> Activate during the Discard phase.
+                  Select one card from your hand and one card from The Pot to swap them.
+                  After the swap, continue with your normal discard.
+                </p>
+
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Strategy Tips</div>
                 <p style={{ marginBottom: 6 }}>
                   \u2022 Round III is worth the most — don't burn your best cards early.
@@ -1140,6 +1511,15 @@ function CommunalPoker() {
                 </p>
                 <p style={{ marginBottom: 6 }}>
                   \u2022 Use the live hand preview to see your hand rank as you select cards.
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  \u2022 Wild Cards are incredibly powerful — never discard them!
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  \u2022 Use Wild Blocker in high-stakes rounds when foe likely has wilds.
+                </p>
+                <p style={{ marginBottom: 6 }}>
+                  \u2022 Card Swap can grab a key communal card before your opponent benefits from it
                 </p>
               </div>
             </div>
@@ -1240,9 +1620,23 @@ function CommunalPoker() {
                 minWidth: 240, textAlign: "center",
               }}>
                 <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", opacity: 0.4, marginBottom: 6 }}>The Pot</div>
+                {swapMode === "hand_selected" && (
+                  <div style={{
+                    fontSize: 11, color: "#3498db", fontWeight: 600, marginBottom: 6,
+                    padding: "3px 10px", borderRadius: 8,
+                    background: "rgba(52,152,219,0.15)", border: "1px solid rgba(52,152,219,0.3)",
+                  }}>Tap a card to swap</div>
+                )}
                 <div style={{ display: "flex", justifyContent: "center", gap: 10, minHeight: 50 }}>
                   {communalCards.length === 0 && <div style={{ opacity: 0.2, fontSize: 13, alignSelf: "center" }}>Shared cards appear here</div>}
-                  {communalCards.map(c => <Card key={c.id} card={c} glowing />)}
+                  {communalCards.map((c, potIdx) => (
+                    <Card key={c.id} card={c}
+                      glowing={swapMode !== "hand_selected"}
+                      selected={false}
+                      selectable={swapMode === "hand_selected"}
+                      onClick={() => handlePotCardClick(potIdx)}
+                    />
+                  ))}
                 </div>
               </div>
 
@@ -1296,25 +1690,100 @@ function CommunalPoker() {
             <div style={{ padding: "6px 0 0", flexShrink: 0 }}>
               <div style={{ textAlign: "center", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, opacity: 0.5, marginBottom: 4 }}>
                 Your Hand ({playerHand.length})
-                {isDiscard && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select up to {roundInfo.maxDiscard} to discard</span>}
+                {swapMode === "select_hand" && <span style={{ color: "#3498db", opacity: 1 }}> · Card Swap: Select a card from your hand</span>}
+                {swapMode === "hand_selected" && <span style={{ color: "#3498db", opacity: 1 }}> · Card Swap: Now tap a Pot card</span>}
+                {!swapMode && isDiscard && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select up to {roundInfo.maxDiscard} to discard</span>}
                 {isPlay && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select {roundInfo.cardsToPlay} to play</span>}
               </div>
-              <div style={{ display: "flex", justifyContent: "center" }}>
+              <div style={{ display: "flex", justifyContent: "center", alignItems: "flex-end", gap: 0 }}>
+              <div style={{ display: "flex" }}>
                 {playerHand.map((card, i) => (
                   <Card
-                    key={card.id} card={card} selected={selected.has(i)}
-                    selectable={isDiscard || isPlay} onClick={() => toggleSelect(i)}
+                    key={card.id} card={card}
+                    selected={swapMode ? i === swapHandIdx : selected.has(i)}
+                    selectable={isDiscard || isPlay || !!swapMode}
+                    onClick={() => toggleSelect(i)}
                     overlap={i > 0} index={i}
                   />
                 ))}
+              </div>
+
+              {/* Secondary Power Hand */}
+              {(() => {
+                const availablePowers = [
+                  { id: "wild_blocker", name: "Wild Blocker", symbol: "\u2298", color: "#9b59b6", desc: "Block foe wild" },
+                  { id: "card_swap", name: "Card Swap", symbol: "\u21c4", color: "#3498db", desc: "Swap hand/pot" }
+                ].filter(p => !usedPowers.has(p.id));
+                if (availablePowers.length === 0) return null;
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginLeft: 12, marginBottom: 2 }}>
+                    <div style={{ fontSize: 8, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.4, marginBottom: 3 }}>Powers</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {availablePowers.map(p => {
+                        const isActive = activePower === p.id;
+                        const canUse = (p.id === "wild_blocker" && phase.includes("play")) || (p.id === "card_swap" && phase.includes("discard") && !swapMode);
+                        return (
+                          <div key={p.id}
+                            onClick={canUse || isActive ? () => activatePower(p.id) : undefined}
+                            onTouchEnd={canUse || isActive ? (e) => { e.preventDefault(); activatePower(p.id); } : undefined}
+                            style={{
+                              width: 60, height: 84, borderRadius: 8, flexShrink: 0,
+                              background: isActive
+                                ? "linear-gradient(145deg, " + p.color + " 0%, #1a1a2e 100%)"
+                                : "linear-gradient(145deg, #1a1a2e 0%, #0d0d1a 100%)",
+                              border: isActive
+                                ? "2px solid " + p.color
+                                : "2px solid rgba(255,255,255,0.1)",
+                              display: "flex", flexDirection: "column", alignItems: "center",
+                              justifyContent: "center", gap: 4,
+                              cursor: canUse || isActive ? "pointer" : "default",
+                              opacity: canUse || isActive ? 1 : 0.35,
+                              boxShadow: isActive
+                                ? "0 0 12px " + p.color + "66"
+                                : "0 2px 6px rgba(0,0,0,0.3)",
+                              transition: "all 0.2s ease",
+                              touchAction: "manipulation",
+                              WebkitTapHighlightColor: "transparent",
+                              userSelect: "none",
+                              position: "relative",
+                            }}
+                          >
+                            <div style={{ fontSize: 22, color: isActive ? "#fff" : p.color, lineHeight: 1 }}>{p.symbol}</div>
+                            <div style={{
+                              fontSize: 8, fontWeight: 700, color: isActive ? "#fff" : "rgba(255,255,255,0.6)",
+                              textAlign: "center", lineHeight: 1.2, letterSpacing: 0.3,
+                              padding: "0 4px",
+                            }}>{p.name}</div>
+                            {isActive && (
+                              <div style={{
+                                position: "absolute", top: -6, right: -6,
+                                width: 14, height: 14, borderRadius: "50%",
+                                background: p.color, border: "2px solid #0a2912",
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                fontSize: 8, color: "#fff", fontWeight: 700,
+                              }}>\u2713</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
               </div>
             </div>
 
             {/* Buttons — always pinned at bottom */}
             <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "8px 0 6px", flexShrink: 0 }}>
-              {isDiscard && (
+              {isDiscard && !swapMode && (
                 <button onClick={confirmDiscard} style={btn("#27ae60", "#2ecc71")}>
                   {selected.size === 0 ? "Keep All" : `Discard ${selected.size}`}
+                </button>
+              )}
+              {swapMode && (
+                <button onClick={cancelSwap} onTouchEnd={(e) => { e.preventDefault(); cancelSwap(); }}
+                  style={btn("rgba(231,76,60,0.3)", "#e74c3c")}>
+                  Cancel Swap
                 </button>
               )}
               {isPlay && (
