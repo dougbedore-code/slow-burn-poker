@@ -12,7 +12,7 @@
   html, body, #root { width: 100%; height: 100%; overflow: hidden; }
   html { touch-action: manipulation; }
   body {
-    background: #0a0a0a;
+    background: #0a2912;
     -webkit-user-select: none; user-select: none;
     -webkit-touch-callout: none;
     overscroll-behavior: none;
@@ -30,77 +30,23 @@
 const { useState, useCallback, useMemo, useEffect, useRef } = React;
 
 const SUITS = ["spades", "hearts", "diamonds", "clubs"];
-
-// ─── Card Asset Loader ──────────────────────────────────────────────────────
-const CARD_ASSETS = { suits: {}, loaded: false };
-
-function loadCardAssets() {
-  return new Promise((resolve) => {
-    const suitImg = new Image();
-
-    suitImg.onload = function() {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-
-      // Slice suit sprite: 2x2 grid
-      const suitCellW = Math.floor(suitImg.width / 2);
-      const suitCellH = Math.floor(suitImg.height / 2);
-      const suitGrid = [["hearts", "diamonds"], ["clubs", "spades"]];
-
-      for (let row = 0; row < 2; row++) {
-        for (let col = 0; col < 2; col++) {
-          canvas.width = suitCellW;
-          canvas.height = suitCellH;
-          ctx.clearRect(0, 0, suitCellW, suitCellH);
-          ctx.drawImage(suitImg, col * suitCellW, row * suitCellH, suitCellW, suitCellH, 0, 0, suitCellW, suitCellH);
-
-          // Auto-trim
-          const idata = ctx.getImageData(0, 0, suitCellW, suitCellH);
-          const d = idata.data;
-          let minX = suitCellW, minY = suitCellH, maxX = 0, maxY = 0;
-          for (let y = 0; y < suitCellH; y++) {
-            for (let x = 0; x < suitCellW; x++) {
-              if (d[(y * suitCellW + x) * 4 + 3] > 30) {
-                minX = Math.min(minX, x); minY = Math.min(minY, y);
-                maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-              }
-            }
-          }
-          if (maxX > minX && maxY > minY) {
-            const tw = maxX - minX + 1, th = maxY - minY + 1;
-            const trimmed = ctx.getImageData(minX, minY, tw, th);
-            canvas.width = tw;
-            canvas.height = th;
-            ctx.putImageData(trimmed, 0, 0);
-          }
-
-          CARD_ASSETS.suits[suitGrid[row][col]] = canvas.toDataURL("image/png");
-        }
-      }
-
-      CARD_ASSETS.loaded = true;
-      resolve(CARD_ASSETS);
-    };
-
-    suitImg.src = "suit-sht.png";
-  });
-}
-const SUIT_SYMBOLS = { spades: "♠", hearts: "♥", diamonds: "♦", clubs: "♣", wild: "★" };
-const SUIT_COLORS = { spades: "#1a1a2e", hearts: "#c0392b", diamonds: "#c0392b", clubs: "#1a1a2e", wild: "#9b59b6" };
-const VALUE_NAMES = { 0:"W",2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A" };
+const SUIT_SYMBOLS = { spades: "♠", hearts: "♥", diamonds: "♦", clubs: "♣" };
+const SUIT_COLORS = { spades: "#1a1a2e", hearts: "#c0392b", diamonds: "#c0392b", clubs: "#1a1a2e" };
+const VALUE_NAMES = { 2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A" };
 
 const PHASES = {
   START: "start",
   R1_COMMUNAL: "r1_communal", R1_DISCARD: "r1_discard", R1_PLAY: "r1_play", R1_REVEAL: "r1_reveal",
   R2_COMMUNAL: "r2_communal", R2_DISCARD: "r2_discard", R2_PLAY: "r2_play", R2_REVEAL: "r2_reveal",
   R3_COMMUNAL: "r3_communal", R3_DISCARD: "r3_discard", R3_PLAY: "r3_play", R3_REVEAL: "r3_reveal",
+  SESSION_COMPLETE: "session_complete",
+  STORE: "store",
   GAME_OVER: "game_over",
 };
 
 function createDeck() {
   const deck = [];
   for (const suit of SUITS) for (let v = 2; v <= 14; v++) deck.push({ suit, value: v, id: `${v}-${suit}` });
-  for (let i = 0; i < 4; i++) deck.push({ suit: "wild", value: 0, id: `wild-${i}`, wild: true });
   return deck;
 }
 
@@ -134,7 +80,7 @@ function getValueCounts(cards) {
   return c;
 }
 
-function _eval3Natural(cards) {
+function evaluate3CardHand(cards) {
   const values = cards.map(c => c.value);
   const flush = isFlush(cards), straight = isStraight(values);
   const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
@@ -148,38 +94,12 @@ function _eval3Natural(cards) {
   return { rank: 0, name: "High Card", kickers: sorted };
 }
 
-// Wild-aware 3-card evaluation
-function evaluate3CardHand(cards) {
-  const wilds = cards.filter(c => c.wild);
-  const naturals = cards.filter(c => !c.wild);
-  const W = wilds.length;
-  if (W === 0) return _eval3Natural(cards);
-  if (W >= 3) return { rank: 5, name: "Straight Flush", kickers: [14] };
-  if (W === 2) {
-    const v = naturals[0].value;
-    if (v >= 12) return { rank: 5, name: "Straight Flush", kickers: [14] };
-    return { rank: 5, name: "Straight Flush", kickers: [v + 2] };
-  }
-  // W === 1: try all 52 substitutions
-  let best = null;
-  for (const s of SUITS) {
-    for (let v = 2; v <= 14; v++) {
-      const ev = _eval3Natural([...naturals, { suit: s, value: v }]);
-      if (!best || compareHands(ev, best) > 0) best = ev;
-    }
-  }
-  return best;
-}
-
-
-
-function _eval5Natural(cards) {
+function evaluate5CardHand(cards) {
   const values = cards.map(c => c.value);
   const flush = isFlush(cards), straight = isStraight(values);
   const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
   const groups = Object.entries(counts).map(([v, c]) => ({ value: +v, count: c })).sort((a, b) => b.count - a.count || b.value - a.value);
-  const fives = groups.filter(g => g.count === 5), quads = groups.filter(g => g.count === 4), trips = groups.filter(g => g.count === 3), pairs = groups.filter(g => g.count === 2);
-  if (fives.length) return { rank: 10, name: "Five of a Kind", kickers: [fives[0].value] };
+  const quads = groups.filter(g => g.count === 4), trips = groups.filter(g => g.count === 3), pairs = groups.filter(g => g.count === 2);
   if (straight.yes && flush && sorted[0] === 14 && sorted[sorted.length-1] === 10) return { rank: 9, name: "Royal Flush", kickers: [14] };
   if (straight.yes && flush) return { rank: 8, name: "Straight Flush", kickers: [straight.high] };
   if (quads.length) return { rank: 7, name: "Four of a Kind", kickers: [quads[0].value, ...sorted.filter(v => v !== quads[0].value)] };
@@ -191,58 +111,6 @@ function _eval5Natural(cards) {
   if (pairs.length === 1) return { rank: 1, name: "One Pair", kickers: [pairs[0].value, ...sorted.filter(v => v !== pairs[0].value)] };
   return { rank: 0, name: "High Card", kickers: sorted };
 }
-
-// Wild-aware 5-card evaluation
-function evaluate5CardHand(cards) {
-  const wilds = cards.filter(c => c.wild);
-  const naturals = cards.filter(c => !c.wild);
-  const W = wilds.length;
-  if (W === 0) return _eval5Natural(cards);
-  if (W >= 5) return { rank: 10, name: "Five of a Kind", kickers: [14] };
-  if (W === 4) return { rank: 10, name: "Five of a Kind", kickers: [naturals[0].value] };
-
-  if (W === 3) {
-    // Analytical approach for 2 naturals + 3 wilds
-    const sorted = [...naturals].sort((a, b) => b.value - a.value);
-    const hi = sorted[0], lo = sorted[1];
-    if (hi.value === lo.value) return { rank: 10, name: "Five of a Kind", kickers: [hi.value] };
-    if (hi.suit === lo.suit) {
-      if (hi.value >= 10 && lo.value >= 10) return { rank: 9, name: "Royal Flush", kickers: [14] };
-      const gap = hi.value - lo.value;
-      if (gap <= 4) {
-        const bestHigh = Math.min(14, lo.value + 4);
-        if (hi.value <= bestHigh && lo.value >= bestHigh - 4) {
-          if (bestHigh === 14 && bestHigh - 4 >= 10) return { rank: 9, name: "Royal Flush", kickers: [14] };
-          return { rank: 8, name: "Straight Flush", kickers: [bestHigh] };
-        }
-      }
-      if (hi.value === 14 && lo.value <= 5) return { rank: 8, name: "Straight Flush", kickers: [5] };
-    }
-    return { rank: 7, name: "Four of a Kind", kickers: [hi.value, lo.value] };
-  }
-
-  // W === 1 or 2: brute force substitutions
-  const subs = [];
-  for (const s of SUITS) for (let v = 2; v <= 14; v++) subs.push({ suit: s, value: v });
-  let best = null;
-  function tryAll(depth, chosen) {
-    if (depth === W) {
-      const hand = [...naturals, ...chosen];
-      const ev = _eval5Natural(hand);
-      if (!best || compareHands(ev, best) > 0) best = ev;
-      return;
-    }
-    for (const sub of subs) {
-      chosen.push(sub);
-      tryAll(depth + 1, chosen);
-      chosen.pop();
-    }
-  }
-  tryAll(0, []);
-  return best;
-}
-
-
 
 function evaluateBest5(cards) {
   if (cards.length <= 5) return evaluate5CardHand(cards);
@@ -258,6 +126,52 @@ function compareHands(a, b) {
   if (a.rank !== b.rank) return a.rank > b.rank ? 1 : -1;
   for (let i = 0; i < Math.max(a.kickers.length, b.kickers.length); i++) { const x = a.kickers[i]||0, y = b.kickers[i]||0; if (x !== y) return x > y ? 1 : -1; }
   return 0;
+}
+
+// ─── Special Card Evaluation ────────────────────────────────────────────────────────
+// Expands wild cards and dual-suit cards into all possible concrete hands
+function expandSpecialCards(cards) {
+  let hands = [[]];
+  for (const card of cards) {
+    const newHands = [];
+    if (card.isWild) {
+      for (const suit of SUITS) {
+        for (let v = 2; v <= 14; v++) {
+          for (const h of hands) {
+            newHands.push([...h, { suit, value: v, id: card.id }]);
+          }
+        }
+      }
+    } else if (card.isDualSuit) {
+      for (const suit of card.suits) {
+        for (const h of hands) {
+          newHands.push([...h, { ...card, suit, isDualSuit: false }]);
+        }
+      }
+    } else {
+      for (const h of hands) {
+        newHands.push([...h, card]);
+      }
+    }
+    hands = newHands;
+  }
+  return hands;
+}
+
+// Evaluates a hand that may contain wild or dual-suit cards
+function evaluateHandWithSpecials(cards) {
+  if (!cards || cards.length < 3) return null;
+  const hasSpecial = cards.some(c => c.isWild || c.isDualSuit);
+  if (!hasSpecial) {
+    return cards.length === 3 ? evaluate3CardHand(cards) : evaluateBest5(cards);
+  }
+  const expansions = expandSpecialCards(cards);
+  let best = null;
+  for (const hand of expansions) {
+    const ev = hand.length === 3 ? evaluate3CardHand(hand) : evaluateBest5(hand);
+    if (!best || compareHands(ev, best) > 0) best = ev;
+  }
+  return best;
 }
 
 // ─── Opponent Model ──────────────────────────────────────────────────────────
@@ -452,25 +366,9 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
       }
     }
     
-    // Wild card versatility bonus
-    const wildInKept = kept.filter(c => c.wild).length;
-    const wildInCommunal = communal.filter(c => c.wild).length;
-    score += wildInKept * 12 + wildInCommunal * 6;
-
-    // Wilds boost the best natural group
-    if (wildInKept + wildInCommunal > 0) {
-      const natCounts = {};
-      for (const c of allCards) { if (!c.wild) natCounts[c.value] = (natCounts[c.value] || 0) + 1; }
-      const topGroup = Math.max(...Object.values(natCounts), 0);
-      const effective = topGroup + wildInKept + wildInCommunal;
-      if (effective >= 5) score += 10;
-      else if (effective >= 4) score += 6;
-      else if (effective >= 3) score += 3;
-    }
-
     return score;
   }
-
+  
   let bestDiscard = [];
   let bestScore = evaluateKeepSet(hand, communalCards);
 
@@ -486,7 +384,6 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
 
   // Calculate how "weak" each card in hand is relative to the hand's needs
   function cardWeakness(card, kept, communal) {
-    if (card.wild) return -10; // Wild cards are incredibly valuable, never discard
     let weakness = 0;
     const allCards = [...kept, ...communal];
     const counts = {};
@@ -721,35 +618,31 @@ function getCombinations(n, k) {
 // ─── Card ────────────────────────────────────────────────────────────────────
 function Card({ card, faceDown, selected, selectable, onClick, small, glowing, overlap, index }) {
   if (!card) return null;
+  const isWild = card.isWild;
+  const isDual = card.isDualSuit;
+  const color = isWild ? "#b8860b" : isDual ? "#7b2d8e" : SUIT_COLORS[card.suit];
+  const symbol = isWild ? "★" : isDual ? (SUIT_SYMBOLS.spades + SUIT_SYMBOLS.hearts) : SUIT_SYMBOLS[card.suit];
+  const label = isWild ? "W" : VALUE_NAMES[card.value];
   const w = small ? 58 : 88;
   const h = small ? 80 : 120;
-  const isWild = card.wild && !faceDown;
-  const isNormal = !faceDown && !card.wild;
-
-  const color = SUIT_COLORS[card.suit];
-  const label = VALUE_NAMES[card.value];
-  const suitSrc = CARD_ASSETS.loaded ? CARD_ASSETS.suits[card.suit] : null;
-
-  const cornerSuitH = small ? 10 : 14;
-  const centerSuitH = small ? 32 : 50;
-  const pad = small ? 4 : 6;
 
   return (
     <div
       onClick={selectable ? onClick : undefined}
       onTouchEnd={selectable ? (e) => { e.preventDefault(); onClick && onClick(); } : undefined}
       style={{
-        width: w, height: h, borderRadius: small ? 6 : 10, flexShrink: 0,
+        width: w, height: h, borderRadius: 8, flexShrink: 0,
         marginLeft: overlap ? (small ? -26 : -32) : 0,
-        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : isWild ? "2px solid #9b59b6" : "1.5px solid rgba(0,0,0,0.2)",
+        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : isWild ? "2px solid #ffd54f" : isDual ? "2px solid #9c27b0" : "2px solid rgba(0,0,0,0.15)",
         background: faceDown
           ? "linear-gradient(135deg, #2c3e50 0%, #1a252f 50%, #2c3e50 100%)"
           : isWild
-            ? "linear-gradient(145deg, #f5e6b8 0%, #d4a017 50%, #9b59b6 100%)"
-            : "none",
-        backgroundImage: isNormal ? "url('card-bg.jpg')" : undefined,
-        backgroundSize: isNormal ? "cover" : undefined,
-        backgroundPosition: isNormal ? "center" : undefined,
+          ? "linear-gradient(145deg, #fff8e1 0%, #ffd54f 50%, #ffb300 100%)"
+          : isDual
+          ? "linear-gradient(145deg, #f3e5f5 0%, #e1bee7 100%)"
+          : "linear-gradient(145deg, #fefefe 0%, #f0ead6 100%)",
+        display: "flex", flexDirection: "column", justifyContent: "space-between",
+        padding: small ? "4px 5px" : "6px 8px",
         cursor: selectable ? "pointer" : "default",
         WebkitTapHighlightColor: "transparent",
         touchAction: "manipulation",
@@ -757,8 +650,6 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
           ? "0 -4px 12px rgba(241,196,15,0.4), 0 4px 10px rgba(0,0,0,0.3)"
           : glowing
           ? "0 0 12px rgba(231,76,60,0.4), 0 4px 10px rgba(0,0,0,0.3)"
-          : isWild
-          ? "0 0 10px rgba(155,89,182,0.3), 0 2px 8px rgba(0,0,0,0.25)"
           : "0 2px 8px rgba(0,0,0,0.25)",
         transition: "all 0.15s ease",
         transform: selected ? "translateY(-16px)" : "none",
@@ -768,65 +659,26 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
     >
       {faceDown ? (
         <div style={{
-          position: "absolute", inset: small ? 3 : 5, borderRadius: small ? 3 : 6,
+          position: "absolute", inset: 5, borderRadius: 4,
           border: "1.5px solid rgba(255,255,255,0.08)",
           background: "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.03) 4px, rgba(255,255,255,0.03) 8px)",
           display: "flex", alignItems: "center", justifyContent: "center",
         }}>
           <span style={{ fontSize: small ? 18 : 26, opacity: 0.15 }}>♠</span>
         </div>
-      ) : isWild ? (
-        <>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1, padding: pad }}>
-            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color: "#9b59b6", fontFamily: "'Georgia', serif" }}>W</span>
-            <span style={{ fontSize: small ? 13 : 16, color: "#9b59b6", marginTop: -1 }}>★</span>
-          </div>
-          <div style={{ fontSize: small ? 24 : 36, textAlign: "center", color: "#9b59b6", lineHeight: 1, opacity: 0.35, position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)" }}>
-            ★
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)", padding: pad, position: "absolute", bottom: 0, right: 0 }}>
-            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color: "#9b59b6", fontFamily: "'Georgia', serif" }}>W</span>
-            <span style={{ fontSize: small ? 13 : 16, color: "#9b59b6", marginTop: -1 }}>★</span>
-          </div>
-        </>
       ) : (
         <>
-          {/* Top-left: value + suit */}
-          <div style={{ position: "absolute", top: pad, left: pad, display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1 }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1 }}>
             <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
-            {suitSrc ? <img src={suitSrc} style={{ height: cornerSuitH, display: "block", marginTop: 0 }} draggable={false} />
-              : <span style={{ fontSize: small ? 11 : 14, color, marginTop: -1 }}>{SUIT_SYMBOLS[card.suit]}</span>}
+            <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
           </div>
-
-          {/* Center: large suit */}
-          {suitSrc ? (
-            <img src={suitSrc} style={{
-              position: "absolute", top: "50%", left: "50%",
-              transform: "translate(-50%, -50%)",
-              height: centerSuitH, opacity: 0.7,
-            }} draggable={false} />
-          ) : (
-            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", fontSize: small ? 28 : 42, color, opacity: 0.5, lineHeight: 1 }}>
-              {SUIT_SYMBOLS[card.suit]}
-            </div>
-          )}
-
-          {/* Bottom-right: value + suit (rotated 180) */}
-          <div style={{ position: "absolute", bottom: pad, right: pad, display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)" }}>
+          <div style={{ fontSize: small ? 24 : 36, textAlign: "center", color, lineHeight: 1, opacity: 0.35 }}>
+            {symbol}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)" }}>
             <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
-            {suitSrc ? <img src={suitSrc} style={{ height: cornerSuitH, display: "block", marginTop: 0 }} draggable={false} />
-              : <span style={{ fontSize: small ? 11 : 14, color, marginTop: -1 }}>{SUIT_SYMBOLS[card.suit]}</span>}
+            <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
           </div>
-
-          {/* Blocked indicator */}
-          {card.blocked && (
-            <div style={{
-              position: "absolute", top: 2, right: 2,
-              background: "rgba(231,76,60,0.9)", color: "#fff",
-              fontSize: 7, padding: "1px 4px", borderRadius: "0 6px 0 4px",
-              fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase",
-            }}>Blocked</div>
-          )}
         </>
       )}
     </div>
@@ -834,9 +686,9 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
 }
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
-function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, roundResults, collapsed, onToggle, previewHandRank, previewHandEval, aiDiscardCounts }) {
+function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, collapsed, onToggle, previewHandRank, previewHandEval, aiDiscardCounts, currentSession }) {
   const roundNames = ["I", "II", "III"];
-  const roundPts = [1, 2, 3];
+  const roundPts = [100, 200, 300];
 
   if (collapsed) {
     return (
@@ -852,12 +704,10 @@ function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, round
           color: "#f0e6d3", fontSize: 18, cursor: "pointer", padding: "8px 10px", lineHeight: 1,
           minWidth: 36, minHeight: 36, touchAction: "manipulation",
         }}>☰</button>
-        <div style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase", opacity: 0.5, writingMode: "vertical-lr" }}>Score</div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: "#f1c40f" }}>{playerScore}</div>
-        <div style={{ fontSize: 10, opacity: 0.3 }}>vs</div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: "#e74c3c" }}>{aiScore}</div>
+        <div style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase", opacity: 0.5, writingMode: "vertical-lr" }}>Bank</div>
+        <div style={{ fontSize: 18, fontWeight: 700, color: bankScore > 0 ? "#2ecc71" : bankScore < 0 ? "#e74c3c" : "#f1c40f" }}>{bankScore > 0 ? "+" : ""}{bankScore}</div>
         <div style={{ marginTop: 8, fontSize: 9, opacity: 0.4, writingMode: "vertical-lr" }}>
-          R{currentRound + 1}
+          S{currentSession + 1} R{currentRound + 1}
         </div>
       </div>
     );
@@ -887,27 +737,26 @@ function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, round
         <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", color: "rgba(255,255,255,0.35)", marginTop: 4 }}>Every Card Counts</div>
       </div>
 
-      {/* Scores */}
-      <div style={{ background: "rgba(0,0,0,0.15)", borderRadius: 8, padding: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div style={{ textAlign: "center", flex: 1 }}>
-            <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.6 }}>You</div>
-            <div style={{ fontSize: 32, fontWeight: 700, color: "#f1c40f" }}>{playerScore}</div>
-          </div>
-          <div style={{ fontSize: 14, opacity: 0.25, padding: "0 8px" }}>vs</div>
-          <div style={{ textAlign: "center", flex: 1 }}>
-            <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.6 }}>Foe</div>
-            <div style={{ fontSize: 32, fontWeight: 700, color: "#e74c3c" }}>{aiScore}</div>
-          </div>
+      {/* Score Bank */}
+      <div style={{ background: "rgba(0,0,0,0.15)", borderRadius: 8, padding: 12, border: "1px solid rgba(255,255,255,0.06)", textAlign: "center" }}>
+        <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.6 }}>Score Bank</div>
+        <div style={{ fontSize: 36, fontWeight: 700, color: bankScore > 0 ? "#2ecc71" : bankScore < 0 ? "#e74c3c" : "#f1c40f" }}>
+          {bankScore > 0 ? "+" : ""}{bankScore}
+        </div>
+        <div style={{ fontSize: 9, opacity: 0.4, marginTop: 4 }}>
+          {bankScore > 0 ? "Ahead — keep it positive!" : bankScore < 0 ? "Behind — fight back!" : "Even — you need to go positive"}
         </div>
       </div>
 
       {/* Rounds */}
       <div>
-        <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5, marginBottom: 8 }}>Rounds</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5 }}>Rounds</div>
+          <div style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase", color: "#f1c40f", opacity: 0.8 }}>Session {currentSession + 1}/3</div>
+        </div>
         {[0,1,2].map(r => {
           const result = roundResults[r];
-          const active = currentRound === r && phase !== "start" && phase !== "game_over";
+          const active = currentRound === r && phase !== "start" && phase !== "game_over" && phase !== "session_complete" && phase !== "store";
           return (
             <div key={r} style={{
               padding: "8px 10px", marginBottom: 4, borderRadius: 6,
@@ -922,14 +771,13 @@ function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, round
                 {result && <div style={{ fontSize: 10, opacity: 0.5, marginTop: 1 }}>{result.pEval.name} vs {result.aEval.name}</div>}
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 11, opacity: 0.4 }}>{roundPts[r]}pt{roundPts[r]>1?"s":""} base</div>
+                <div style={{ fontSize: 11, opacity: 0.4 }}>{roundPts[r]} pts</div>
                 {result && (
                   <>
-                    <div style={{ fontSize: 10, fontWeight: 600, color: result.winner === "player" ? "#f1c40f" : result.winner === "ai" ? "#e74c3c" : "rgba(255,255,255,0.5)" }}>
-                      {result.winner === "player" ? "Won" : result.winner === "ai" ? "Lost" : "Tie"}
-                      {result.points > 0 && ` +${result.points}`}
+                    <div style={{ fontSize: 10, fontWeight: 600, color: result.winner === "player" ? "#2ecc71" : result.winner === "ai" ? "#e74c3c" : "rgba(255,255,255,0.5)" }}>
+                      {result.winner === "player" ? `+${result.points}` : result.winner === "ai" ? `−${result.points}` : "Tie"}
                     </div>
-                    {result.bonus > 0 && <div style={{ fontSize: 9, opacity: 0.4 }}>+{result.bonus} rank bonus</div>}
+                    {result.bonus > 0 && <div style={{ fontSize: 9, opacity: 0.4 }}>{result.basePoints}+{result.bonus}</div>}
                   </>
                 )}
               </div>
@@ -939,7 +787,7 @@ function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, round
       </div>
 
       {/* Current Round Info */}
-      {phase !== "start" && phase !== "game_over" && (
+      {phase !== "start" && phase !== "game_over" && phase !== "session_complete" && phase !== "store" && (
         <div style={{ background: "rgba(0,0,0,0.15)", borderRadius: 8, padding: 10, border: "1px solid rgba(255,255,255,0.06)" }}>
           <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5, marginBottom: 6 }}>This Round</div>
           <div style={{ fontSize: 12, opacity: 0.85, lineHeight: 1.7 }}>
@@ -955,7 +803,7 @@ function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, round
       )}
 
       {/* AI Discard Intel */}
-      {aiDiscardCounts && aiDiscardCounts.length > 0 && phase !== "start" && phase !== "game_over" && (
+      {aiDiscardCounts && aiDiscardCounts.length > 0 && phase !== "start" && phase !== "game_over" && phase !== "session_complete" && phase !== "store" && (
         <div style={{ background: "rgba(231,76,60,0.1)", borderRadius: 8, padding: 10, border: "1px solid rgba(231,76,60,0.2)" }}>
           <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5, marginBottom: 6, color: "#e74c3c" }}>Foe's Discards</div>
           <div style={{ display: "flex", gap: 6 }}>
@@ -1008,8 +856,8 @@ function SidePanel({ phase, currentRound, roundInfo, playerScore, aiScore, round
           </div>
         ) : (
           <div style={{ fontSize: 10, lineHeight: 1.6 }}>
-            {["5 of a Kind","Royal Flush","Str. Flush","Four Kind","Full House","Flush","Straight","Three Kind","Two Pair","One Pair","High Card"].map((h,i) => {
-              const rank = 10 - i; // 5-card ranks: RF=9, SF=8, Four=7, FH=6, Fl=5, St=4, Three=3, 2P=2, 1P=1, HC=0
+            {["Royal Flush","Str. Flush","Four Kind","Full House","Flush","Straight","Three Kind","Two Pair","One Pair","High Card"].map((h,i) => {
+              const rank = 9 - i; // 5-card ranks: RF=9, SF=8, Four=7, FH=6, Fl=5, St=4, Three=3, 2P=2, 1P=1, HC=0
               const isActive = previewHandRank !== null && previewHandRank === rank;
               return (
                 <div key={i} style={{
@@ -1040,25 +888,16 @@ function CommunalPoker() {
   const [aiPlayed, setAiPlayed] = useState([[], [], []]);
   const [selected, setSelected] = useState(new Set());
   const [phase, setPhase] = useState(PHASES.START);
-  const [playerScore, setPlayerScore] = useState(0);
-  const [aiScore, setAiScore] = useState(0);
+  const [bankScore, setBankScore] = useState(0);
   const [roundResults, setRoundResults] = useState([]);
   const [message, setMessage] = useState("");
   const [showAiCards, setShowAiCards] = useState(false);
-  const [tiebreaker, setTiebreaker] = useState(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+    const [sidebarOpen, setSidebarOpen] = useState(false);
   const [aiDiscardCounts, setAiDiscardCounts] = useState([]);
   const [showRules, setShowRules] = useState(false);
-  const [usedPowers, setUsedPowers] = useState(new Set());
-  const [activePower, setActivePower] = useState(null);
-  const [swapMode, setSwapMode] = useState(null);
-  const [swapHandIdx, setSwapHandIdx] = useState(null);
+  const [currentSession, setCurrentSession] = useState(0);
+  const [storeCart, setStoreCart] = useState(new Set());
   const opponentModelRef = useRef(createOpponentModel());
-  const [assetsLoaded, setAssetsLoaded] = useState(false);
-
-  useEffect(() => {
-    loadCardAssets().then(() => setAssetsLoaded(true));
-  }, []);
 
   const startGame = useCallback(() => {
     const d = shuffle(createDeck());
@@ -1066,80 +905,74 @@ function CommunalPoker() {
     setPlayerHand(d.slice(0, 10).sort((a, b) => b.value - a.value));
     setAiHand(d.slice(10, 20).sort((a, b) => b.value - a.value));
     setCommunalCards([]); setPlayerPlayed([[], [], []]); setAiPlayed([[], [], []]);
-    setSelected(new Set()); setPlayerScore(0); setAiScore(0);
-    setRoundResults([]); setShowAiCards(false); setTiebreaker(null);
+    setSelected(new Set()); setBankScore(0);
+    setRoundResults([]); setShowAiCards(false);
     setAiDiscardCounts([]);
-    setUsedPowers(new Set()); setActivePower(null); setSwapMode(null); setSwapHandIdx(null);
+    setCurrentSession(0);
+    setStoreCart(new Set());
     setPhase(PHASES.R1_COMMUNAL); setMessage("");
   }, []);
 
+  // Start next session (preserves scores, resets round state)
+  const startNextSession = useCallback((sessionNum, powerCards = []) => {
+    const d = shuffle(createDeck());
+    const np = powerCards.length;
+    setDeck(d.slice(20 - np));
+    setPlayerHand([...powerCards, ...d.slice(0, 10 - np)].sort((a, b) => (b.isWild ? 15 : b.value) - (a.isWild ? 15 : a.value)));
+    setAiHand(d.slice(10 - np, 20 - np).sort((a, b) => b.value - a.value));
+    setCommunalCards([]); setPlayerPlayed([[], [], []]); setAiPlayed([[], [], []]);
+    setSelected(new Set()); setRoundResults([]);
+    setShowAiCards(false);
+    setAiDiscardCounts([]);
+    setCurrentSession(sessionNum);
+    setPhase(PHASES.R1_COMMUNAL); setMessage("");
+  }, []);
+
+  const toggleStoreItem = useCallback((item) => {
+    setStoreCart(prev => {
+      const next = new Set(prev);
+      if (next.has(item)) {
+        next.delete(item);
+      } else {
+        next.add(item);
+      }
+      return next;
+    });
+  }, []);
+
+  const proceedFromStore = useCallback(() => {
+    const cards = [];
+    let cost = 0;
+    if (storeCart.has("wild")) {
+      cards.push({ suit: "wild", value: 15, id: `power-wild-s${currentSession + 2}`, isWild: true });
+      cost += 300;
+    }
+    if (storeCart.has("dual-king")) {
+      cards.push({ suit: "dual", value: 13, id: `power-dualking-s${currentSession + 2}`, isDualSuit: true, suits: ["spades", "hearts"] });
+      cost += 200;
+    }
+    if (cost > 0) setBankScore(s => s - cost);
+    setStoreCart(new Set());
+    startNextSession(currentSession + 1, cards);
+  }, [storeCart, currentSession, startNextSession]);
+
   const roundInfo = useMemo(() => {
     const p = phase;
-    if (p.startsWith("r1")) return { round: 0, maxDiscard: 3, cardsToPlay: 2, points: 1 };
-    if (p.startsWith("r2")) return { round: 1, maxDiscard: 3, cardsToPlay: 3, points: 2 };
-    if (p.startsWith("r3")) return { round: 2, maxDiscard: 3, cardsToPlay: 4, points: 3 };
+    if (p.startsWith("r1")) return { round: 0, maxDiscard: 3, cardsToPlay: 2, points: 100 };
+    if (p.startsWith("r2")) return { round: 1, maxDiscard: 3, cardsToPlay: 3, points: 200 };
+    if (p.startsWith("r3")) return { round: 2, maxDiscard: 3, cardsToPlay: 4, points: 300 };
     return { round: -1, maxDiscard: 0, cardsToPlay: 0, points: 0 };
   }, [phase]);
 
   const toggleSelect = useCallback((idx) => {
-    if (swapMode === "select_hand" || swapMode === "hand_selected") {
-      setSwapHandIdx(idx);
-      setSwapMode("hand_selected");
-      setMessage("Now tap a card in The Pot to complete the swap.");
-      return;
-    }
     setSelected(prev => { const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n; });
-  }, [swapMode]);
-
-  const activatePower = useCallback((powerId) => {
-    if (usedPowers.has(powerId)) return;
-    if (powerId === "card_swap" && phase.includes("discard")) {
-      setActivePower("card_swap");
-      setSwapMode("select_hand");
-      setSwapHandIdx(null);
-      setSelected(new Set());
-      setMessage("Card Swap activated! Select a card from your hand.");
-    } else if (powerId === "wild_blocker" && phase.includes("play")) {
-      if (activePower === "wild_blocker") {
-        setActivePower(null);
-        setMessage("");
-      } else {
-        setActivePower("wild_blocker");
-        setMessage("Wild Blocker armed! Play your cards to neutralize a foe's wild.");
-      }
-    }
-  }, [usedPowers, phase, activePower]);
-
-  const handlePotCardClick = useCallback((potIdx) => {
-    if (swapMode !== "hand_selected" || swapHandIdx === null) return;
-    const newHand = [...playerHand];
-    const newCommunal = [...communalCards];
-    const handCard = newHand[swapHandIdx];
-    const potCard = newCommunal[potIdx];
-    newHand[swapHandIdx] = potCard;
-    newCommunal[potIdx] = handCard;
-    setPlayerHand(newHand.sort((a, b) => b.value - a.value));
-    setCommunalCards(newCommunal);
-    setUsedPowers(prev => new Set([...prev, "card_swap"]));
-    setActivePower(null);
-    setSwapMode(null);
-    setSwapHandIdx(null);
-    setSelected(new Set());
-    setMessage("Card Swap complete! Swapped " + VALUE_NAMES[handCard.value] + SUIT_SYMBOLS[handCard.suit] + " with " + VALUE_NAMES[potCard.value] + SUIT_SYMBOLS[potCard.suit] + ".");
-  }, [swapMode, swapHandIdx, playerHand, communalCards]);
-
-  const cancelSwap = useCallback(() => {
-    setActivePower(null);
-    setSwapMode(null);
-    setSwapHandIdx(null);
-    setMessage("");
   }, []);
 
   const placeCommunal = useCallback(() => {
     const nd = [...deck]; const card = nd.shift(); setDeck(nd);
     setCommunalCards(prev => [...prev, card]); setSelected(new Set()); setShowAiCards(false);
     const rn = phase === PHASES.R1_COMMUNAL ? 1 : phase === PHASES.R2_COMMUNAL ? 2 : 3;
-    setMessage(`Round ${rn}: ${card.wild ? 'A Wild Card enters The Pot!' : 'A new card enters The Pot!'}`);
+    setMessage(`Round ${rn}: A communal card is revealed!`);
     setTimeout(() => {
       if (phase === PHASES.R1_COMMUNAL) setPhase(PHASES.R1_DISCARD);
       else if (phase === PHASES.R2_COMMUNAL) setPhase(PHASES.R2_DISCARD);
@@ -1181,25 +1014,7 @@ function CommunalPoker() {
     const pi = [...selected];
     const pp = pi.map(i => playerHand[i]), nph = playerHand.filter((_, i) => !selected.has(i));
     const ai = aiSelectCards(aiHand, communalCards, cardsToPlay, round, opponentModelRef.current);
-    let ap = ai.map(i => aiHand[i]);
-    const nah = aiHand.filter((_, i) => !ai.includes(i));
-    // Wild Blocker: transform one AI wild card into a random standard card
-    let blockerMsg = "";
-    if (activePower === "wild_blocker") {
-      const aiWildIdx = ap.findIndex(c => c.wild);
-      if (aiWildIdx !== -1) {
-        const rSuit = SUITS[Math.floor(Math.random() * 4)];
-        const rVal = Math.floor(Math.random() * 13) + 2;
-        const newCard = { suit: rSuit, value: rVal, id: "blocked-" + rSuit + "-" + rVal, blocked: true };
-        ap = [...ap];
-        ap[aiWildIdx] = newCard;
-        blockerMsg = " Wild Blocker turned foe's Wild into " + VALUE_NAMES[rVal] + SUIT_SYMBOLS[rSuit] + "!";
-      } else {
-        blockerMsg = " Wild Blocker had no effect — no foe wilds played.";
-      }
-      setUsedPowers(prev => new Set([...prev, "wild_blocker"]));
-      setActivePower(null);
-    }
+    const ap = ai.map(i => aiHand[i]), nah = aiHand.filter((_, i) => !ai.includes(i));
     const npp = [...playerPlayed]; npp[round] = pp;
     const nap = [...aiPlayed]; nap[round] = ap;
     
@@ -1208,54 +1023,50 @@ function CommunalPoker() {
     
     setPlayerHand(nph); setAiHand(nah); setPlayerPlayed(npp); setAiPlayed(nap); setSelected(new Set());
     const pfh = [...pp, ...communalCards], afh = [...ap, ...communalCards];
-    const ef = pfh.length === 3 ? evaluate3CardHand : evaluateBest5;
-    const pe = ef(pfh), ae = ef(afh), res = compareHands(pe, ae);
+    const pe = evaluateHandWithSpecials(pfh);
+    const ae = evaluateHandWithSpecials(afh);
+    const res = compareHands(pe, ae);
     const rankDiff = Math.abs(pe.rank - ae.rank);
     let w, totalPoints;
     if (res > 0) { 
-      w = "player"; totalPoints = points + rankDiff;
-      setPlayerScore(s => s + totalPoints); 
+      w = "player"; totalPoints = points + (rankDiff * 50);
+      setBankScore(s => s + totalPoints); 
     } else if (res < 0) { 
-      w = "ai"; totalPoints = points + rankDiff;
-      setAiScore(s => s + totalPoints); 
+      w = "ai"; totalPoints = points + (rankDiff * 50);
+      setBankScore(s => s - totalPoints); 
     } else { 
       w = "tie"; totalPoints = 0; 
     }
     
     // Observe hand result
     observeHandResult(opponentModelRef.current, round, pe.rank);
-    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff }]); setShowAiCards(true);
-    const bonusText = rankDiff > 0 ? ` (${points} base + ${rankDiff} bonus)` : "";
-    const baseMsg = w === "player" ? `You win! +${totalPoints}pt${totalPoints>1?"s":""}${bonusText}` : w === "ai" ? `Opponent wins! +${totalPoints}pt${totalPoints>1?"s":""}${bonusText}` : "A tie!";
-    setMessage(baseMsg + blockerMsg);
+    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff * 50 }]); setShowAiCards(true);
+    const bonusText = rankDiff > 0 ? ` (${points} base + ${rankDiff * 50} rank bonus)` : "";
+    setMessage(w === "player" ? `Round won! Bank +${totalPoints}${bonusText}` : w === "ai" ? `Round lost! Bank −${totalPoints}${bonusText}` : "A tie! Bank unchanged.");
     setTimeout(() => {
       if (phase === PHASES.R1_PLAY) setPhase(PHASES.R1_REVEAL);
       else if (phase === PHASES.R2_PLAY) setPhase(PHASES.R2_REVEAL);
       else setPhase(PHASES.R3_REVEAL);
     }, 300);
-  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase, activePower]);
+  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase]);
 
   const nextRound = useCallback(() => {
     if (phase === PHASES.R1_REVEAL) setPhase(PHASES.R2_COMMUNAL);
     else if (phase === PHASES.R2_REVEAL) setPhase(PHASES.R3_COMMUNAL);
     else {
-      let playerWonGame = playerScore > aiScore;
-      if (playerScore === aiScore) {
-        const pl = [...playerHand].sort((a,b) => b.value - a.value);
-        const al = [...aiHand].sort((a,b) => b.value - a.value);
-        let tw = "tie";
-        for (let i = 0; i < Math.max(pl.length, al.length); i++) {
-          const pv = pl[i]?.value||0, av = al[i]?.value||0;
-          if (pv > av) { tw = "player"; break; } if (av > pv) { tw = "ai"; break; }
-        }
-        setTiebreaker({ winner: tw, playerCards: pl, aiCards: al });
-        if (tw === "player") { setPlayerScore(s => s + 1); playerWonGame = true; }
-        else if (tw === "ai") setAiScore(s => s + 1);
+      // End of session's 3 rounds
+      observeGameEnd(opponentModelRef.current, bankScore > 0);
+
+      if (currentSession < 2) {
+        // More sessions to play
+        setShowAiCards(true);
+        setPhase(PHASES.SESSION_COMPLETE);
+      } else {
+        // Final session done — bank decides the winner
+        setShowAiCards(true); setPhase(PHASES.GAME_OVER);
       }
-      setShowAiCards(true); setPhase(PHASES.GAME_OVER);
-      observeGameEnd(opponentModelRef.current, playerWonGame);
     }
-  }, [phase, playerScore, aiScore, playerHand, aiHand]);
+  }, [phase, bankScore, playerHand, aiHand, currentSession]);
 
   const isDiscard = phase.includes("discard"), isPlay = phase.includes("play"), isReveal = phase.includes("reveal");
   const currentRound = roundInfo.round;
@@ -1265,13 +1076,10 @@ function CommunalPoker() {
     if (!isPlay || selected.size === 0) return null;
     const selectedCards = [...selected].map(i => playerHand[i]).filter(Boolean);
     const previewCards = [...selectedCards, ...communalCards];
-    if (previewCards.length < 2) return null;
+    if (previewCards.length < 3) return null;
     try {
-      if (previewCards.length === 3) return evaluate3CardHand(previewCards).rank;
-      if (previewCards.length >= 5) return evaluateBest5(previewCards).rank;
-      // For partial hands (4 cards in R2), evaluate what we can
-      if (previewCards.length === 4) return evaluate5CardHand ? null : null;
-      return null;
+      const ev = evaluateHandWithSpecials(previewCards);
+      return ev ? ev.rank : null;
     } catch(e) { return null; }
   }, [isPlay, selected, playerHand, communalCards]);
 
@@ -1282,9 +1090,7 @@ function CommunalPoker() {
     const previewCards = [...selectedCards, ...communalCards];
     if (selectedCards.length !== roundInfo.cardsToPlay) return null;
     try {
-      if (previewCards.length === 3) return evaluate3CardHand(previewCards);
-      if (previewCards.length >= 5) return evaluateBest5(previewCards);
-      return null;
+      return evaluateHandWithSpecials(previewCards);
     } catch(e) { return null; }
   }, [isPlay, selected, playerHand, communalCards, roundInfo.cardsToPlay]);
 
@@ -1305,25 +1111,14 @@ function CommunalPoker() {
   };
 
   return (
-    <div style={{ width: "100%", height: "100dvh", display: "flex", background: "#0a0a0a", fontFamily: "'Segoe UI', 'Helvetica Neue', sans-serif", overflow: "hidden", touchAction: "none", overscrollBehavior: "none" }}>
-      <SidePanel {...{ phase, currentRound, roundInfo, playerScore, aiScore, roundResults, previewHandRank, previewHandEval, aiDiscardCounts }} collapsed={!sidebarOpen} onToggle={() => setSidebarOpen(s => !s)} />
+    <div style={{ width: "100%", height: "100dvh", display: "flex", background: "#0a2912", fontFamily: "'Segoe UI', 'Helvetica Neue', sans-serif", overflow: "hidden", touchAction: "none", overscrollBehavior: "none" }}>
+      <SidePanel {...{ phase, currentRound, roundInfo, bankScore, roundResults, previewHandRank, previewHandEval, aiDiscardCounts, currentSession }} collapsed={!sidebarOpen} onToggle={() => setSidebarOpen(s => !s)} />
 
       <div style={{
         flex: 1, display: "flex", flexDirection: "column", position: "relative", padding: "8px 16px",
-        backgroundImage: "url('table-bg.jpg')",
-        backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat",
+        background: "radial-gradient(ellipse at center, #1a5c2a 0%, #0f3d1a 50%, #0a2912 100%)",
         color: "#f0e6d3", overflow: "hidden", minHeight: 0,
       }}>
-
-        {/* Loading overlay */}
-        {!assetsLoaded && phase !== PHASES.START && (
-          <div style={{
-            position: "absolute", inset: 0, zIndex: 50,
-            background: "rgba(10,10,10,0.9)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            color: "#f0e6d3", fontSize: 16, fontFamily: "'Georgia', serif",
-          }}>Loading card assets...</div>
-        )}
 
         {/* Rules info button — top right */}
         <button
@@ -1385,10 +1180,10 @@ function CommunalPoker() {
               <div style={{ fontSize: 13, lineHeight: 1.8, opacity: 0.9 }}>
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Overview</div>
                 <p style={{ marginBottom: 12 }}>
-                  Slow Burn Poker is a 3-round card strategy game against an AI opponent.
-                  You each receive 10 cards. Each round, you select cards from your hand to
-                  combine with a shared card in The Pot to form the best poker hand.
-                  Stakes escalate each round — plan ahead or burn out early.
+                  Slow Burn Poker is a card strategy game played across 3 sessions of 3 rounds each.
+                  You each receive 10 cards per session. Each round, select cards from your hand to
+                  combine with The Pot to form the best poker hand. Your Score Bank rises when
+                  you win and falls when you lose. Keep it positive across all 3 sessions to win.
                 </p>
 
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Each Round</div>
@@ -1404,49 +1199,35 @@ function CommunalPoker() {
 
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Round Structure</div>
                 <p style={{ marginBottom: 4 }}>
-                  <span style={{ fontWeight: 600 }}>Round I</span> — Play 2 cards + 1 pot card = 3-card hand (1 pt base)
+                  <span style={{ fontWeight: 600 }}>Round I</span> — Play 2 cards + 1 pot card = 3-card hand (100 pts)
                 </p>
                 <p style={{ marginBottom: 4 }}>
-                  <span style={{ fontWeight: 600 }}>Round II</span> — Play 3 cards + 2 pot cards = best 5 of 5 (2 pts base)
+                  <span style={{ fontWeight: 600 }}>Round II</span> — Play 3 cards + 2 pot cards = best 5 of 5 (200 pts)
                 </p>
                 <p style={{ marginBottom: 12 }}>
-                  <span style={{ fontWeight: 600 }}>Round III</span> — Play 4 cards + 3 pot cards = best 5 of 7 (3 pts base)
+                  <span style={{ fontWeight: 600 }}>Round III</span> — Play 4 cards + 3 pot cards = best 5 of 7 (300 pts)
                 </p>
 
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Scoring</div>
                 <p style={{ marginBottom: 12 }}>
-                  The winner of each round earns the base points plus a bonus equal to the
-                  difference in hand rank (e.g. a Flush beating a Pair earns extra).
-                  If scores are tied after 3 rounds, leftover cards break the tie.
+                  Your Score Bank starts at 0. Win a round and the bank goes up by the round's
+                  points (base + 50 per rank of hand difference). Lose a round and the bank
+                  drops by the same amount. After 3 sessions, if your bank is positive you win.
+                  Zero or negative means defeat. Every point of margin matters.
                 </p>
 
-                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Wild Cards</div>
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>The Store</div>
                 <p style={{ marginBottom: 12 }}>
-                  The deck includes 4 Wild Cards (marked with \u2605). A Wild Card can stand in
-                  for any card, automatically forming the best possible hand. They can appear in
-                  your hand or in The Pot. With wilds, Five of a Kind becomes possible — the
-                  highest-ranking hand in the game!
-                </p>
-
-                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Special Powers</div>
-                <p style={{ marginBottom: 6 }}>
-                  You start each game with two power cards, shown to the right of your hand.
-                  Each can be used once per game. Once played, they're gone for the rest of that game.
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <span style={{ color: "#9b59b6", fontWeight: 600 }}>⊘ Wild Blocker:</span> Activate during the Play phase.
-                  When hands are revealed, one of the foe's wild cards is transformed into a random
-                  standard card. If the foe played no wilds, the power has no effect but is still expended.
-                </p>
-                <p style={{ marginBottom: 12 }}>
-                  <span style={{ color: "#3498db", fontWeight: 600 }}>⇄ Card Swap:</span> Activate during the Discard phase.
-                  Select one card from your hand and one card from The Pot to swap them.
-                  After the swap, continue with your normal discard.
+                  Between sessions, visit The Store to invest bank points in power cards.
+                  You can buy cards even if it takes your bank negative — a risky gamble that could pay off big.
+                  A <span style={{ color: "#ffd54f", fontWeight: 600 }}>Wild Card</span> (300 pts) can become any card to complete any hand.
+                  A <span style={{ color: "#ce93d8", fontWeight: 600 }}>Dual King</span> (200 pts) is a King that counts as Spades or Hearts.
+                  Power cards replace one of your 10 dealt cards in the next session.
                 </p>
 
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Strategy Tips</div>
                 <p style={{ marginBottom: 6 }}>
-                  \u2022 Round III is worth the most — don't burn your best cards early.
+                  \u2022 Round III is worth 300 pts — don't burn your best cards early.
                 </p>
                 <p style={{ marginBottom: 6 }}>
                   \u2022 Watch the Foe's discard count — if they keep all cards, they're confident.
@@ -1456,15 +1237,6 @@ function CommunalPoker() {
                 </p>
                 <p style={{ marginBottom: 6 }}>
                   \u2022 Use the live hand preview to see your hand rank as you select cards.
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  \u2022 Wild Cards are incredibly powerful — never discard them!
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  \u2022 Use Wild Blocker in high-stakes rounds when foe likely has wilds.
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  \u2022 Card Swap can grab a key communal card before your opponent benefits from it
                 </p>
               </div>
             </div>
@@ -1480,7 +1252,7 @@ function CommunalPoker() {
               WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
             }}>SLOW BURN POKER</div>
             <div style={{ fontSize: 14, opacity: 0.6, maxWidth: 380, textAlign: "center", lineHeight: 1.6 }}>
-              Three rounds. Rising stakes. Every discard is a gamble, every card played is a commitment. The final round decides it all.
+              Three sessions. Nine rounds. Your Score Bank starts at zero. Win rounds to push it up, lose rounds and it drops. Stay positive after 3 sessions to win.
             </div>
             <button onClick={startGame} style={btn("#27ae60", "#2ecc71")}>Deal Cards</button>
           </div>
@@ -1491,36 +1263,154 @@ function CommunalPoker() {
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, zIndex: 1 }}>
             <div style={{
               fontSize: 36, fontWeight: 700, fontFamily: "'Georgia', serif",
-              color: playerScore > aiScore ? "#2ecc71" : aiScore > playerScore ? "#e74c3c" : "#f1c40f",
+              color: bankScore > 0 ? "#2ecc71" : "#e74c3c",
             }}>
-              {playerScore > aiScore ? "VICTORY!" : aiScore > playerScore ? "DEFEAT" : "DRAW"}
+              {bankScore > 0 ? "VICTORY!" : "DEFEAT"}
             </div>
-            <div style={{ fontSize: 16, opacity: 0.7 }}>Final Score: {playerScore} – {aiScore}</div>
-            {tiebreaker && (
-              <div style={{ textAlign: "center", padding: 16, background: "rgba(0,0,0,0.2)", borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", marginTop: 8 }}>
-                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 1, opacity: 0.5, marginBottom: 10 }}>Tiebreaker — Leftover Cards</div>
-                <div style={{ display: "flex", justifyContent: "center", gap: 32, marginBottom: 8 }}>
-                  <div>
-                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4 }}>Yours</div>
-                    <div style={{ display: "flex", gap: 4 }}>{tiebreaker.playerCards.map(c => <Card key={c.id} card={c} small />)}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4 }}>Opponent's</div>
-                    <div style={{ display: "flex", gap: 4 }}>{tiebreaker.aiCards.map(c => <Card key={c.id} card={c} small />)}</div>
-                  </div>
-                </div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: tiebreaker.winner === "player" ? "#2ecc71" : tiebreaker.winner === "ai" ? "#e74c3c" : "#f1c40f" }}>
-                  {tiebreaker.winner === "player" ? "Your cards win the tiebreaker! (+1)" : tiebreaker.winner === "ai" ? "Opponent's cards win! (+1)" : "Evenly matched!"}
-                </div>
-              </div>
-            )}
+            <div style={{
+              fontSize: 42, fontWeight: 700, marginTop: 4,
+              color: bankScore > 0 ? "#2ecc71" : bankScore < 0 ? "#e74c3c" : "#f1c40f",
+            }}>
+              {bankScore > 0 ? "+" : ""}{bankScore}
+            </div>
+            <div style={{ fontSize: 14, opacity: 0.6 }}>Final Score Bank</div>
+            <div style={{ fontSize: 12, opacity: 0.4, marginTop: 2 }}>
+              {bankScore > 0 ? "You stayed in the green across 3 sessions!" : bankScore === 0 ? "Dead even — the house wins on a tie." : "The opponent's pressure was too much."}
+            </div>
             <button onClick={startGame} style={btn("#e67e22", "#f39c12")}>Play Again</button>
           </div>
         )}
 
+        {/* Session Complete */}
+        {phase === PHASES.SESSION_COMPLETE && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, zIndex: 1 }}>
+            <div style={{
+              fontSize: 12, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5,
+            }}>Session {currentSession + 1} of 3</div>
+            <div style={{
+              fontSize: 30, fontWeight: 700, fontFamily: "'Georgia', serif",
+              background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)",
+              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+            }}>SESSION COMPLETE</div>
+            <div style={{ marginTop: 8, textAlign: "center" }}>
+              <div style={{ fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.5 }}>Score Bank</div>
+              <div style={{ fontSize: 42, fontWeight: 700, color: bankScore > 0 ? "#2ecc71" : bankScore < 0 ? "#e74c3c" : "#f1c40f" }}>
+                {bankScore > 0 ? "+" : ""}{bankScore}
+              </div>
+            </div>
+            <div style={{ fontSize: 13, opacity: 0.5, marginTop: 4 }}>
+              {bankScore > 0 ? "Looking good — keep the pressure up!" : bankScore < 0 ? "You're behind — time to swing big." : "Dead even — you need to go positive to win."}
+            </div>
+            <button
+              onClick={() => setPhase(PHASES.STORE)}
+              onTouchEnd={(e) => { e.preventDefault(); setPhase(PHASES.STORE); }}
+              style={btn("#e67e22", "#f39c12")}
+            >
+              Visit the Store →
+            </button>
+          </div>
+        )}
+
+        {/* Store */}
+        {phase === PHASES.STORE && (() => {
+          const cartCost = (storeCart.has("wild") ? 300 : 0) + (storeCart.has("dual-king") ? 200 : 0);
+          const afterPurchase = bankScore - cartCost;
+          return (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, zIndex: 1 }}>
+              <div style={{ fontSize: 12, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5 }}>
+                Before Session {currentSession + 2}
+              </div>
+              <div style={{
+                fontSize: 28, fontWeight: 700, fontFamily: "'Georgia', serif",
+                background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)",
+                WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+              }}>THE STORE</div>
+              <div style={{ fontSize: 13, opacity: 0.5 }}>
+                Spend points on power cards for next session
+              </div>
+
+              <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap", justifyContent: "center" }}>
+                {/* Wild Card */}
+                <div
+                  onClick={() => toggleStoreItem("wild")}
+                  onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("wild"); }}
+                  style={{
+                    padding: "16px 20px", borderRadius: 12, width: 170, textAlign: "center",
+                    background: storeCart.has("wild") ? "rgba(255,213,79,0.15)" : "rgba(0,0,0,0.2)",
+                    border: storeCart.has("wild") ? "2px solid #ffd54f" : "1px solid rgba(255,255,255,0.1)",
+                    cursor: "pointer",
+                    opacity: 1,
+                    touchAction: "manipulation", transition: "all 0.2s",
+                  }}
+                >
+                  <div style={{ fontSize: 36, color: "#ffd54f" }}>★</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#ffd54f", marginTop: 6 }}>Wild Card</div>
+                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, lineHeight: 1.4 }}>
+                    Becomes any card to complete any hand
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#f1c40f", marginTop: 8 }}>300 pts</div>
+                  {storeCart.has("wild") && <div style={{ fontSize: 11, color: "#2ecc71", marginTop: 4, fontWeight: 600 }}>✓ Selected</div>}
+                </div>
+
+                {/* Dual King */}
+                <div
+                  onClick={() => toggleStoreItem("dual-king")}
+                  onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("dual-king"); }}
+                  style={{
+                    padding: "16px 20px", borderRadius: 12, width: 170, textAlign: "center",
+                    background: storeCart.has("dual-king") ? "rgba(156,39,176,0.15)" : "rgba(0,0,0,0.2)",
+                    border: storeCart.has("dual-king") ? "2px solid #9c27b0" : "1px solid rgba(255,255,255,0.1)",
+                    cursor: "pointer",
+                    opacity: 1,
+                    touchAction: "manipulation", transition: "all 0.2s",
+                  }}
+                >
+                  <div style={{ fontSize: 30, color: "#9c27b0" }}>♠♥</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#ce93d8", marginTop: 6 }}>Dual King</div>
+                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, lineHeight: 1.4 }}>
+                    King that counts as Spades or Hearts
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#f1c40f", marginTop: 8 }}>200 pts</div>
+                  {storeCart.has("dual-king") && <div style={{ fontSize: 11, color: "#2ecc71", marginTop: 4, fontWeight: 600 }}>✓ Selected</div>}
+                </div>
+              </div>
+
+              {/* Points summary */}
+              <div style={{ marginTop: 12, textAlign: "center" }}>
+                <div style={{ fontSize: 13, opacity: 0.6 }}>Current Bank: <span style={{ color: bankScore > 0 ? "#2ecc71" : bankScore < 0 ? "#e74c3c" : "#f1c40f", fontWeight: 700 }}>{bankScore > 0 ? "+" : ""}{bankScore}</span></div>
+                {cartCost > 0 && (
+                  <>
+                    <div style={{ fontSize: 12, color: "#e74c3c", marginTop: 4 }}>Cost: −{cartCost}</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: afterPurchase > 0 ? "#2ecc71" : afterPurchase < 0 ? "#e74c3c" : "#f1c40f", marginTop: 2 }}>After purchase: {afterPurchase > 0 ? "+" : ""}{afterPurchase}</div>
+                  </>
+                )}
+              </div>
+
+              <button
+                onClick={proceedFromStore}
+                onTouchEnd={(e) => { e.preventDefault(); proceedFromStore(); }}
+                style={btn("#27ae60", "#2ecc71")}
+              >
+                {cartCost > 0 ? `Buy & Start Session ${currentSession + 2} →` : `Skip Store — Session ${currentSession + 2} →`}
+              </button>
+            </div>
+          );
+        })()}
+
         {/* Active Game */}
-        {phase !== PHASES.START && phase !== PHASES.GAME_OVER && (
+        {phase !== PHASES.START && phase !== PHASES.GAME_OVER && phase !== PHASES.SESSION_COMPLETE && phase !== PHASES.STORE && (
           <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, zIndex: 1, paddingTop: "2vh", paddingBottom: "1vh" }}>
+            {/* Session indicator */}
+            <div style={{ display: "flex", justifyContent: "center", padding: "0 0 2px", flexShrink: 0 }}>
+              <div style={{
+                padding: "2px 12px", borderRadius: 8,
+                background: "rgba(241,196,15,0.08)", border: "1px solid rgba(241,196,15,0.15)",
+                fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", color: "#f1c40f", opacity: 0.7,
+              }}>
+                Session {currentSession + 1} of 3
+              </div>
+            </div>
+
             {/* Opponent hand */}
             <div style={{ display: "flex", justifyContent: "center", padding: "4px 0 4px", flexShrink: 0 }}>
               <div style={{ display: "flex" }}>
@@ -1565,23 +1455,9 @@ function CommunalPoker() {
                 minWidth: 240, textAlign: "center",
               }}>
                 <div style={{ fontSize: 10, letterSpacing: 2, textTransform: "uppercase", opacity: 0.4, marginBottom: 6 }}>The Pot</div>
-                {swapMode === "hand_selected" && (
-                  <div style={{
-                    fontSize: 11, color: "#3498db", fontWeight: 600, marginBottom: 6,
-                    padding: "3px 10px", borderRadius: 8,
-                    background: "rgba(52,152,219,0.15)", border: "1px solid rgba(52,152,219,0.3)",
-                  }}>Tap a card to swap</div>
-                )}
                 <div style={{ display: "flex", justifyContent: "center", gap: 10, minHeight: 50 }}>
                   {communalCards.length === 0 && <div style={{ opacity: 0.2, fontSize: 13, alignSelf: "center" }}>Shared cards appear here</div>}
-                  {communalCards.map((c, potIdx) => (
-                    <Card key={c.id} card={c}
-                      glowing={swapMode !== "hand_selected"}
-                      selected={false}
-                      selectable={swapMode === "hand_selected"}
-                      onClick={() => handlePotCardClick(potIdx)}
-                    />
-                  ))}
+                  {communalCards.map(c => <Card key={c.id} card={c} glowing />)}
                 </div>
               </div>
 
@@ -1599,7 +1475,7 @@ function CommunalPoker() {
                     </div>
                     <div style={{ fontSize: 11, opacity: 0.7 }}>
                       {r.pEval.name} vs {r.aEval.name}
-                      {r.points > 0 && <span style={{ color: "#f1c40f" }}> · {r.points} pt{r.points>1?"s":""}</span>}
+                      {r.points > 0 && <span style={{ color: r.winner === "player" ? "#2ecc71" : "#e74c3c" }}> · {r.winner === "player" ? "+" : "−"}{r.points}</span>}
                       {r.bonus > 0 && <span style={{ opacity: 0.6 }}> ({r.basePoints}+{r.bonus})</span>}
                     </div>
                   </div>
@@ -1635,100 +1511,25 @@ function CommunalPoker() {
             <div style={{ padding: "6px 0 0", flexShrink: 0 }}>
               <div style={{ textAlign: "center", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, opacity: 0.5, marginBottom: 4 }}>
                 Your Hand ({playerHand.length})
-                {swapMode === "select_hand" && <span style={{ color: "#3498db", opacity: 1 }}> · Card Swap: Select a card from your hand</span>}
-                {swapMode === "hand_selected" && <span style={{ color: "#3498db", opacity: 1 }}> · Card Swap: Now tap a Pot card</span>}
-                {!swapMode && isDiscard && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select up to {roundInfo.maxDiscard} to discard</span>}
+                {isDiscard && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select up to {roundInfo.maxDiscard} to discard</span>}
                 {isPlay && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select {roundInfo.cardsToPlay} to play</span>}
               </div>
-              <div style={{ display: "flex", justifyContent: "center", alignItems: "flex-end", gap: 0 }}>
-              <div style={{ display: "flex" }}>
+              <div style={{ display: "flex", justifyContent: "center" }}>
                 {playerHand.map((card, i) => (
                   <Card
-                    key={card.id} card={card}
-                    selected={swapMode ? i === swapHandIdx : selected.has(i)}
-                    selectable={isDiscard || isPlay || !!swapMode}
-                    onClick={() => toggleSelect(i)}
+                    key={card.id} card={card} selected={selected.has(i)}
+                    selectable={isDiscard || isPlay} onClick={() => toggleSelect(i)}
                     overlap={i > 0} index={i}
                   />
                 ))}
-              </div>
-
-              {/* Secondary Power Hand */}
-              {(() => {
-                const availablePowers = [
-                  { id: "wild_blocker", name: "Wild Blocker", symbol: "\u2298", color: "#9b59b6", desc: "Block foe wild" },
-                  { id: "card_swap", name: "Card Swap", symbol: "\u21c4", color: "#3498db", desc: "Swap hand/pot" }
-                ].filter(p => !usedPowers.has(p.id));
-                if (availablePowers.length === 0) return null;
-                return (
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginLeft: 12, marginBottom: 2 }}>
-                    <div style={{ fontSize: 8, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.4, marginBottom: 3 }}>Powers</div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      {availablePowers.map(p => {
-                        const isActive = activePower === p.id;
-                        const canUse = (p.id === "wild_blocker" && phase.includes("play")) || (p.id === "card_swap" && phase.includes("discard") && !swapMode);
-                        return (
-                          <div key={p.id}
-                            onClick={canUse || isActive ? () => activatePower(p.id) : undefined}
-                            onTouchEnd={canUse || isActive ? (e) => { e.preventDefault(); activatePower(p.id); } : undefined}
-                            style={{
-                              width: 60, height: 84, borderRadius: 8, flexShrink: 0,
-                              background: isActive
-                                ? "linear-gradient(145deg, " + p.color + " 0%, #1a1a2e 100%)"
-                                : "linear-gradient(145deg, #1a1a2e 0%, #0d0d1a 100%)",
-                              border: isActive
-                                ? "2px solid " + p.color
-                                : "2px solid rgba(255,255,255,0.1)",
-                              display: "flex", flexDirection: "column", alignItems: "center",
-                              justifyContent: "center", gap: 4,
-                              cursor: canUse || isActive ? "pointer" : "default",
-                              opacity: canUse || isActive ? 1 : 0.35,
-                              boxShadow: isActive
-                                ? "0 0 12px " + p.color + "66"
-                                : "0 2px 6px rgba(0,0,0,0.3)",
-                              transition: "all 0.2s ease",
-                              touchAction: "manipulation",
-                              WebkitTapHighlightColor: "transparent",
-                              userSelect: "none",
-                              position: "relative",
-                            }}
-                          >
-                            <div style={{ fontSize: 22, color: isActive ? "#fff" : p.color, lineHeight: 1 }}>{p.symbol}</div>
-                            <div style={{
-                              fontSize: 8, fontWeight: 700, color: isActive ? "#fff" : "rgba(255,255,255,0.6)",
-                              textAlign: "center", lineHeight: 1.2, letterSpacing: 0.3,
-                              padding: "0 4px",
-                            }}>{p.name}</div>
-                            {isActive && (
-                              <div style={{
-                                position: "absolute", top: -6, right: -6,
-                                width: 14, height: 14, borderRadius: "50%",
-                                background: p.color, border: "2px solid #0a2912",
-                                display: "flex", alignItems: "center", justifyContent: "center",
-                                fontSize: 8, color: "#fff", fontWeight: 700,
-                              }}>\u2713</div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })()}
               </div>
             </div>
 
             {/* Buttons — always pinned at bottom */}
             <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "8px 0 6px", flexShrink: 0 }}>
-              {isDiscard && !swapMode && (
+              {isDiscard && (
                 <button onClick={confirmDiscard} style={btn("#27ae60", "#2ecc71")}>
                   {selected.size === 0 ? "Keep All" : `Discard ${selected.size}`}
-                </button>
-              )}
-              {swapMode && (
-                <button onClick={cancelSwap} onTouchEnd={(e) => { e.preventDefault(); cancelSwap(); }}
-                  style={btn("rgba(231,76,60,0.3)", "#e74c3c")}>
-                  Cancel Swap
                 </button>
               )}
               {isPlay && (
@@ -1743,7 +1544,7 @@ function CommunalPoker() {
               )}
               {isReveal && (
                 <button onClick={nextRound} style={btn("#8e44ad", "#9b59b6")}>
-                  {phase === PHASES.R3_REVEAL ? "See Final Results" : "Next Round →"}
+                  {phase === PHASES.R3_REVEAL ? (currentSession < 2 ? "Session Results →" : "See Final Results") : "Next Round →"}
                 </button>
               )}
             </div>
