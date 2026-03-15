@@ -789,9 +789,9 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
           </div>
           <div style={{ fontSize: 9, opacity: 0.5, marginTop: 2 }}>
             {winStreak >= 2
-              ? `Next win: ${(1 + (0.25 * winStreak)).toFixed(2)}\u00d7 points`
+              ? `Next win: ${(1 + (0.25 * winStreak)).toFixed(2)}× points`
               : winStreak === 1
-              ? "Win again for 1.25\u00d7 bonus!"
+              ? "Win again for 1.25× bonus!"
               : "Win consecutive rounds for bonus"}
           </div>
         </div>
@@ -1054,6 +1054,10 @@ function CommunalPoker() {
   const [coins, setCoins] = useState(0);
   const [gamePhase, setGamePhase] = useState(1); // 1 = standard, 2 = no 2s + AI extras, 3 = no 2s/3s + more AI extras + streak bonus
   const [winStreak, setWinStreak] = useState(0); // consecutive player wins (persists across sessions in Phase 3)
+  const [hasDoubleScore, setHasDoubleScore] = useState(false); // bought but not yet used
+  const [doubleScoreActive, setDoubleScoreActive] = useState(false); // activated for current round
+  const [swapCardOffers, setSwapCardOffers] = useState([]); // generated each store visit
+  const deckModsRef = useRef([]); // permanent card upgrades: [{removeValue, removeSuit, addValue, addSuit}]
   const opponentModelRef = useRef(createOpponentModel());
 
   // Initialize three decks, deal hands, go straight to R1
@@ -1088,6 +1092,16 @@ function CommunalPoker() {
       ad = shuffle(ad);
     }
 
+    // Apply permanent card upgrades to player deck
+    for (const mod of deckModsRef.current) {
+      const idx = pd.findIndex(c => c.value === mod.removeValue && c.suit === mod.removeSuit);
+      if (idx >= 0) {
+        pd.splice(idx, 1);
+        pd.push({ suit: mod.addSuit, value: mod.addValue, id: `upgrade-${mod.addValue}-${mod.addSuit}-from${mod.removeValue}${mod.removeSuit}` });
+      }
+    }
+    pd = shuffle(pd);
+
     // Deal 10 cards to each player
     const np = powerCards.length;
     const pHand = [...powerCards, ...pd.slice(0, 10 - np)].sort((a, b) => (b.isWild ? 15 : b.value) - (a.isWild ? 15 : a.value));
@@ -1116,6 +1130,9 @@ function CommunalPoker() {
   const startGame = useCallback(() => {
     setWinStreak(0); // reset streak on new game
     setCoins(0); // reset coins on new game
+    setHasDoubleScore(false);
+    setDoubleScoreActive(false);
+    deckModsRef.current = []; // reset card upgrades
     initSession(0, [], true, gamePhase);
   }, [initSession, gamePhase]);
 
@@ -1136,6 +1153,32 @@ function CommunalPoker() {
     });
   }, []);
 
+  // Generate swap card offers from low cards still in the player's deck
+  useEffect(() => {
+    if (phase === PHASES.STORE) {
+      const faceValues = [11, 12, 13, 14]; // J, Q, K, A
+      // Find all 4s, 5s, 6s not yet upgraded
+      const available = [];
+      for (const v of [4, 5, 6]) {
+        for (const s of SUITS) {
+          const alreadyUpgraded = deckModsRef.current.some(m => m.removeValue === v && m.removeSuit === s);
+          if (!alreadyUpgraded) available.push({ value: v, suit: s });
+        }
+      }
+      // Shuffle and pick up to 3
+      for (let i = available.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [available[i], available[j]] = [available[j], available[i]];
+      }
+      setSwapCardOffers(available.slice(0, 3).map(card => ({
+        fromValue: card.value,
+        fromSuit: card.suit,
+        toValue: faceValues[Math.floor(Math.random() * 4)],
+        toSuit: SUITS[Math.floor(Math.random() * 4)],
+      })));
+    }
+  }, [phase]);
+
   const proceedFromStore = useCallback(() => {
     const cards = [];
     let cost = 0;
@@ -1147,10 +1190,24 @@ function CommunalPoker() {
       cards.push({ suit: "dual", value: 13, id: `power-dualking-s${currentSession + 2}`, isDualSuit: true, suits: ["spades", "hearts"] });
       cost += 100;
     }
+    if (storeCart.has("double-score")) {
+      setHasDoubleScore(true);
+      cost += 25;
+    }
+    // Card upgrades — permanently modify player's deck
+    swapCardOffers.forEach((sc, i) => {
+      if (storeCart.has(`swap-${i}`)) {
+        deckModsRef.current = [...deckModsRef.current, {
+          removeValue: sc.fromValue, removeSuit: sc.fromSuit,
+          addValue: sc.toValue, addSuit: sc.toSuit,
+        }];
+        cost += 25;
+      }
+    });
     if (cost > 0) setCoins(c => c - cost);
     setStoreCart(new Set());
     startNextSession(currentSession + 1, cards);
-  }, [storeCart, currentSession, startNextSession]);
+  }, [storeCart, currentSession, startNextSession, swapCardOffers]);
 
   const roundInfo = useMemo(() => {
     const p = phase;
@@ -1167,6 +1224,7 @@ function CommunalPoker() {
   const placeCommunal = useCallback(() => {
     const nd = [...potDeck]; const card = nd.shift(); setPotDeck(nd);
     setCommunalCards(prev => [...prev, card]); setSelected(new Set()); setShowAiCards(false);
+    setDoubleScoreActive(false); // reset activation each round
     const rn = phase === PHASES.R1_COMMUNAL ? 1 : phase === PHASES.R2_COMMUNAL ? 2 : 3;
     setMessage(`Round ${rn}: A communal card is revealed!`);
     setTimeout(() => {
@@ -1226,6 +1284,7 @@ function CommunalPoker() {
     const res = compareHands(pe, ae);
     const rankDiff = Math.abs(pe.rank - ae.rank);
     let w, totalPoints, streakMultiplier = 1;
+    const isDoubled = doubleScoreActive;
     if (res > 0) {
       w = "player"; totalPoints = points + (rankDiff * 50);
       // Phase 3 streak bonus
@@ -1234,10 +1293,12 @@ function CommunalPoker() {
         streakMultiplier = 1 + (0.25 * (newStreak - 1)); // 2 wins=1.25x, 3=1.5x, 4=1.75x...
         totalPoints = Math.round(totalPoints * streakMultiplier);
       }
+      if (isDoubled) totalPoints = totalPoints * 2;
       setWinStreak(newStreak);
       setBankScore(s => s + totalPoints);
     } else if (res < 0) {
       w = "ai"; totalPoints = points + (rankDiff * 50);
+      if (isDoubled) totalPoints = totalPoints * 2;
       setWinStreak(0); // streak broken
       setBankScore(s => s - totalPoints);
     } else {
@@ -1245,15 +1306,25 @@ function CommunalPoker() {
       // ties don't break streak
     }
 
+    // Consume double score power after use
+    if (isDoubled) { setHasDoubleScore(false); setDoubleScoreActive(false); }
+
     // Award coins on player win (10% of points, rounded up)
     const coinsEarned = w === "player" ? Math.ceil(totalPoints * 0.10) : 0;
     if (coinsEarned > 0) setCoins(c => c + coinsEarned);
 
     // Observe hand result
     observeHandResult(opponentModelRef.current, round, pe.rank);
-    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff * 50, streakMultiplier, coinsEarned }]); setShowAiCards(true);
+    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff * 50, streakMultiplier, coinsEarned, isDoubled }]); setShowAiCards(true);
     let bonusText;
-    if (streakMultiplier > 1) {
+    if (isDoubled && streakMultiplier > 1) {
+      const preStreak = points + (rankDiff * 50);
+      const preDouble = Math.round(preStreak * streakMultiplier);
+      bonusText = ` (${preStreak} \u00d7${streakMultiplier.toFixed(2)} streak \u00d72 = ${totalPoints})`;
+    } else if (isDoubled) {
+      const preDouble = points + (rankDiff * 50);
+      bonusText = ` (${preDouble} \u00d7 2 doubled = ${totalPoints})`;
+    } else if (streakMultiplier > 1) {
       const preStreak = points + (rankDiff * 50);
       bonusText = ` (${preStreak} \u00d7 ${streakMultiplier.toFixed(2)} streak = ${totalPoints})`;
     } else if (rankDiff > 0) {
@@ -1261,15 +1332,16 @@ function CommunalPoker() {
     } else {
       bonusText = "";
     }
+    const doubleTag = isDoubled ? " \u00d72 DOUBLED!" : "";
     const streakMsg = w === "player" && gamePhase === 3 && winStreak + 1 >= 2 ? ` \uD83D\uDD25 ${winStreak + 1} streak!` : "";
     const coinMsg = coinsEarned > 0 ? ` +${coinsEarned} coin${coinsEarned !== 1 ? "s" : ""}` : "";
-    setMessage(w === "player" ? `Round won! Bank +${totalPoints}${bonusText}${streakMsg}${coinMsg}` : w === "ai" ? `Round lost! Bank \u2212${totalPoints}${bonusText}` : "A tie! Bank unchanged.");
+    setMessage(w === "player" ? `Round won! Bank +${totalPoints}${bonusText}${doubleTag}${streakMsg}${coinMsg}` : w === "ai" ? `Round lost! Bank \u2212${totalPoints}${bonusText}${doubleTag}` : "A tie! Bank unchanged.");
     setTimeout(() => {
       if (phase === PHASES.R1_PLAY) setPhase(PHASES.R1_REVEAL);
       else if (phase === PHASES.R2_PLAY) setPhase(PHASES.R2_REVEAL);
       else setPhase(PHASES.R3_REVEAL);
     }, 300);
-  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase, winStreak, gamePhase]);
+  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase, winStreak, gamePhase, doubleScoreActive]);
 
   const nextRound = useCallback(() => {
     if (phase === PHASES.R1_REVEAL) setPhase(PHASES.R2_COMMUNAL);
@@ -1449,7 +1521,7 @@ function CommunalPoker() {
                     borderRadius: 6, color: "#f0e6d3", fontSize: 16, cursor: "pointer",
                     padding: "4px 10px", touchAction: "manipulation",
                   }}
-                >\u2715</button>
+                >✕</button>
               </div>
 
               <div style={{ fontSize: 13, lineHeight: 1.8, opacity: 0.9 }}>
@@ -1505,24 +1577,25 @@ function CommunalPoker() {
                 <p style={{ marginBottom: 12 }}>
                   Win a round and you earn coins equal to 10% of your points (rounded up).
                   Coins are separate from your Score Bank and carry across sessions.
-                  Between sessions, visit The Store to spend coins on power cards.
-                  A <span style={{ color: "#ffd54f", fontWeight: 600 }}>Wild Card</span> (100 coins) can become any card to complete any hand.
-                  A <span style={{ color: "#ce93d8", fontWeight: 600 }}>Dual King</span> (100 coins) is a King that counts as Spades or Hearts.
-                  Power cards replace one of your 10 dealt cards in the next session.
+                  Between sessions, visit The Store to spend coins.
+                  <span style={{ color: "#ffd54f", fontWeight: 600 }}> Wild Card</span> (100 coins) becomes any card.
+                  <span style={{ color: "#ce93d8", fontWeight: 600 }}> Dual King</span> (100 coins) is a King that counts as Spades or Hearts.
+                  <span style={{ color: "#f39c12", fontWeight: 600 }}> Double Score</span> (25 coins) can be activated any round to 2× the score — win or lose!
+                  <span style={{ color: "#3498db", fontWeight: 600 }}> Card Upgrades</span> (25 coins) let you sacrifice a low card (4, 5, or 6) and receive a random face card in your next hand.
                 </p>
 
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Strategy Tips</div>
                 <p style={{ marginBottom: 6 }}>
-                  \u2022 Round III is worth 300 pts — don't burn your best cards early.
+                  • Round III is worth 300 pts — don't burn your best cards early.
                 </p>
                 <p style={{ marginBottom: 6 }}>
-                  \u2022 Watch the Foe's discard count — if they keep all cards, they're confident.
+                  • Watch the Foe's discard count — if they keep all cards, they're confident.
                 </p>
                 <p style={{ marginBottom: 6 }}>
-                  \u2022 The Pot cards are shared — build hands that synergize with what's on the board.
+                  • The Pot cards are shared — build hands that synergize with what's on the board.
                 </p>
                 <p style={{ marginBottom: 6 }}>
-                  \u2022 Use the live hand preview to see your hand rank as you select cards.
+                  • Use the live hand preview to see your hand rank as you select cards.
                 </p>
               </div>
             </div>
@@ -1647,10 +1720,19 @@ function CommunalPoker() {
 
         {/* Store */}
         {phase === PHASES.STORE && (() => {
-          const cartCost = (storeCart.has("wild") ? 100 : 0) + (storeCart.has("dual-king") ? 100 : 0);
+          const suitSymbols = { spades: "\u2660", hearts: "\u2665", diamonds: "\u2666", clubs: "\u2663" };
+          const suitColors = { spades: "#e0e0e0", hearts: "#e74c3c", diamonds: "#3498db", clubs: "#2ecc71" };
+          let cartCost = (storeCart.has("wild") ? 100 : 0) + (storeCart.has("dual-king") ? 100 : 0) + (storeCart.has("double-score") ? 25 : 0);
+          swapCardOffers.forEach((_, i) => { if (storeCart.has(`swap-${i}`)) cartCost += 25; });
           const afterPurchase = coins - cartCost;
+          const storeItemStyle = (sel, color) => ({
+            padding: "12px 14px", borderRadius: 10, width: 150, textAlign: "center",
+            background: sel ? `${color}22` : "rgba(0,0,0,0.2)",
+            border: sel ? `2px solid ${color}88` : "1px solid rgba(255,255,255,0.1)",
+            cursor: "pointer", touchAction: "manipulation", transition: "all 0.2s",
+          });
           return (
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, zIndex: 1 }}>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, zIndex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "16px 0" }} data-scrollable>
               <div style={{ fontSize: 12, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5 }}>
                 Before Session {currentSession + 2}
               </div>
@@ -1659,71 +1741,84 @@ function CommunalPoker() {
                 background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)",
                 WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
               }}>THE STORE</div>
-              <div style={{ fontSize: 13, opacity: 0.5 }}>
-                Spend coins on power cards for next session
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#f1c40f" }}>
+                {"\uD83E\uDE99"} {coins} coin{coins !== 1 ? "s" : ""}
               </div>
 
-              <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap", justifyContent: "center" }}>
-                {/* Wild Card */}
-                <div
-                  onClick={() => toggleStoreItem("wild")}
-                  onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("wild"); }}
-                  style={{
-                    padding: "16px 20px", borderRadius: 12, width: 170, textAlign: "center",
-                    background: storeCart.has("wild") ? "rgba(255,213,79,0.15)" : "rgba(0,0,0,0.2)",
-                    border: storeCart.has("wild") ? "2px solid #ffd54f" : "1px solid rgba(255,255,255,0.1)",
-                    cursor: "pointer",
-                    opacity: 1,
-                    touchAction: "manipulation", transition: "all 0.2s",
-                  }}
-                >
-                  <div style={{ fontSize: 36, color: "#ffd54f" }}>★</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#ffd54f", marginTop: 6 }}>Wild Card</div>
-                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, lineHeight: 1.4 }}>
-                    Becomes any card to complete any hand
-                  </div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: "#f1c40f", marginTop: 8 }}>100 coins</div>
-                  {storeCart.has("wild") && <div style={{ fontSize: 11, color: "#2ecc71", marginTop: 4, fontWeight: 600 }}>✓ Selected</div>}
+              {/* Premium Cards (100 coins) */}
+              <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.4, marginTop: 4 }}>Premium Cards — 100 coins</div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
+                <div onClick={() => toggleStoreItem("wild")} onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("wild"); }} style={storeItemStyle(storeCart.has("wild"), "#ffd54f")}>
+                  <div style={{ fontSize: 30, color: "#ffd54f" }}>★</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#ffd54f", marginTop: 4 }}>Wild Card</div>
+                  <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, lineHeight: 1.4 }}>Becomes any card</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>100 {"\uD83E\uDE99"}</div>
+                  {storeCart.has("wild") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
                 </div>
+                <div onClick={() => toggleStoreItem("dual-king")} onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("dual-king"); }} style={storeItemStyle(storeCart.has("dual-king"), "#9c27b0")}>
+                  <div style={{ fontSize: 24, color: "#9c27b0" }}>♠♥</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#ce93d8", marginTop: 4 }}>Dual King</div>
+                  <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, lineHeight: 1.4 }}>King: Spades or Hearts</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>100 {"\uD83E\uDE99"}</div>
+                  {storeCart.has("dual-king") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
+                </div>
+              </div>
 
-                {/* Dual King */}
+              {/* Powers (25 coins) */}
+              <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.4, marginTop: 8 }}>Powers — 25 coins</div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
                 <div
-                  onClick={() => toggleStoreItem("dual-king")}
-                  onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("dual-king"); }}
-                  style={{
-                    padding: "16px 20px", borderRadius: 12, width: 170, textAlign: "center",
-                    background: storeCart.has("dual-king") ? "rgba(156,39,176,0.15)" : "rgba(0,0,0,0.2)",
-                    border: storeCart.has("dual-king") ? "2px solid #9c27b0" : "1px solid rgba(255,255,255,0.1)",
-                    cursor: "pointer",
-                    opacity: 1,
-                    touchAction: "manipulation", transition: "all 0.2s",
-                  }}
+                  onClick={() => !hasDoubleScore && toggleStoreItem("double-score")}
+                  onTouchEnd={(e) => { e.preventDefault(); !hasDoubleScore && toggleStoreItem("double-score"); }}
+                  style={{...storeItemStyle(storeCart.has("double-score"), "#e67e22"), ...(hasDoubleScore ? { opacity: 0.35, cursor: "default" } : {})}}
                 >
-                  <div style={{ fontSize: 30, color: "#9c27b0" }}>♠♥</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#ce93d8", marginTop: 6 }}>Dual King</div>
-                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, lineHeight: 1.4 }}>
-                    King that counts as Spades or Hearts
-                  </div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: "#f1c40f", marginTop: 8 }}>100 coins</div>
-                  {storeCart.has("dual-king") && <div style={{ fontSize: 11, color: "#2ecc71", marginTop: 4, fontWeight: 600 }}>✓ Selected</div>}
+                  <div style={{ fontSize: 28, color: "#e67e22" }}>×2</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#f39c12", marginTop: 4 }}>Double Score</div>
+                  <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, lineHeight: 1.4 }}>Activate any round to 2× score (win or lose)</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>25 {"\uD83E\uDE99"}</div>
+                  {hasDoubleScore && <div style={{ fontSize: 10, color: "#f39c12", marginTop: 3, fontWeight: 600 }}>Already owned</div>}
+                  {storeCart.has("double-score") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
                 </div>
+              </div>
+
+              {/* Swap Cards (25 coins) */}
+              <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.4, marginTop: 8 }}>Card Upgrades — 25 coins</div>
+              <div style={{ fontSize: 10, opacity: 0.35, marginTop: -4, marginBottom: 4 }}>Sacrifice a low card, get a face card in your next hand</div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
+                {swapCardOffers.map((sc, i) => {
+                  const faceNames = { 11: "J", 12: "Q", 13: "K", 14: "A" };
+                  const sel = storeCart.has(`swap-${i}`);
+                  return (
+                    <div key={i}
+                      onClick={() => toggleStoreItem(`swap-${i}`)}
+                      onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem(`swap-${i}`); }}
+                      style={storeItemStyle(sel, suitColors[sc.toSuit])}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        <span style={{ fontSize: 18, opacity: 0.5 }}>{sc.fromValue}{suitSymbols[sc.fromSuit]}</span>
+                        <span style={{ fontSize: 16, opacity: 0.4 }}>{"\u2192"}</span>
+                        <span style={{ fontSize: 24, fontWeight: 700, color: suitColors[sc.toSuit] }}>{faceNames[sc.toValue]}{suitSymbols[sc.toSuit]}</span>
+                      </div>
+                      <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, lineHeight: 1.4 }}>
+                        Trade {sc.fromValue}{suitSymbols[sc.fromSuit]} for {faceNames[sc.toValue]}{suitSymbols[sc.toSuit]}
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>25 {"\uD83E\uDE99"}</div>
+                      {sel && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>{"✓ Selected"}</div>}
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Coins summary */}
-              <div style={{ marginTop: 12, textAlign: "center" }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "#f1c40f" }}>
-                  {"\uD83E\uDE99"} {coins} coin{coins !== 1 ? "s" : ""}
+              {cartCost > 0 && (
+                <div style={{ marginTop: 8, textAlign: "center" }}>
+                  <div style={{ fontSize: 12, color: "#e74c3c" }}>Cost: −{cartCost} {"\uD83E\uDE99"}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: afterPurchase >= 0 ? "#f1c40f" : "#e74c3c", marginTop: 2 }}>
+                    Remaining: {afterPurchase} coin{afterPurchase !== 1 ? "s" : ""}
+                  </div>
+                  {afterPurchase < 0 && <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 2 }}>Not enough coins!</div>}
                 </div>
-                {cartCost > 0 && (
-                  <>
-                    <div style={{ fontSize: 12, color: "#e74c3c", marginTop: 4 }}>Cost: −{cartCost}</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: afterPurchase >= 0 ? "#f1c40f" : "#e74c3c", marginTop: 2 }}>
-                      After purchase: {afterPurchase} coin{afterPurchase !== 1 ? "s" : ""}
-                    </div>
-                    {afterPurchase < 0 && <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 2 }}>Not enough coins!</div>}
-                  </>
-                )}
-              </div>
+              )}
 
               <button
                 onClick={() => { if (afterPurchase >= 0 || cartCost === 0) proceedFromStore(); }}
@@ -1872,14 +1967,30 @@ function CommunalPoker() {
                 </button>
               )}
               {isPlay && (
-                <button onClick={confirmPlay} disabled={selected.size !== roundInfo.cardsToPlay}
-                  style={{
-                    ...btn(selected.size === roundInfo.cardsToPlay ? "#2980b9" : "#555",
-                           selected.size === roundInfo.cardsToPlay ? "#3498db" : "#666"),
-                    opacity: selected.size === roundInfo.cardsToPlay ? 1 : 0.5,
-                  }}>
-                  Play {roundInfo.cardsToPlay} Cards
-                </button>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
+                  {hasDoubleScore && !doubleScoreActive && (
+                    <button
+                      onClick={() => setDoubleScoreActive(true)}
+                      onTouchEnd={(e) => { e.preventDefault(); setDoubleScoreActive(true); }}
+                      style={{...btn("#e67e22", "#f39c12"), fontSize: 12, padding: "8px 12px", minHeight: 36}}
+                    >×2 Double</button>
+                  )}
+                  {doubleScoreActive && (
+                    <button
+                      onClick={() => setDoubleScoreActive(false)}
+                      onTouchEnd={(e) => { e.preventDefault(); setDoubleScoreActive(false); }}
+                      style={{...btn("#c0392b", "#e74c3c"), fontSize: 12, padding: "8px 12px", minHeight: 36, boxShadow: "0 0 12px rgba(231,76,60,0.5)"}}
+                    >×2 ACTIVE — tap to cancel</button>
+                  )}
+                  <button onClick={confirmPlay} disabled={selected.size !== roundInfo.cardsToPlay}
+                    style={{
+                      ...btn(selected.size === roundInfo.cardsToPlay ? "#2980b9" : "#555",
+                             selected.size === roundInfo.cardsToPlay ? "#3498db" : "#666"),
+                      opacity: selected.size === roundInfo.cardsToPlay ? 1 : 0.5,
+                    }}>
+                    Play {roundInfo.cardsToPlay} Cards{doubleScoreActive ? " (\u00d72)" : ""}
+                  </button>
+                </div>
               )}
               {isReveal && (
                 <button onClick={nextRound} style={btn("#8e44ad", "#9b59b6")}>
