@@ -31,16 +31,8 @@ const { useState, useCallback, useMemo, useEffect, useRef } = React;
 
 const SUITS = ["spades", "hearts", "diamonds", "clubs"];
 const SUIT_SYMBOLS = { spades: "♠", hearts: "♥", diamonds: "♦", clubs: "♣" };
-const SUIT_COLORS = { spades: "#1a1a2e", hearts: "#c0392b", diamonds: "#c0392b", clubs: "#1a1a2e", crown: "#c0392b", owl: "#1a1a2e" };
+const SUIT_COLORS = { spades: "#1a1a2e", hearts: "#c0392b", diamonds: "#c0392b", clubs: "#1a1a2e" };
 const VALUE_NAMES = { 2:"2",3:"3",4:"4",5:"5",6:"6",7:"7",8:"8",9:"9",10:"10",11:"J",12:"Q",13:"K",14:"A" };
-
-// Communal deck suits
-const COMMUNAL_SUITS = ["crown", "owl"];
-const COMMUNAL_SUIT_SYMBOLS = { crown: "👑", owl: "🦉" };
-const COMMUNAL_SUIT_COLORS = { crown: "#c0392b", owl: "#1a1a2e" };
-// Color-line compatibility: which standard suits each communal suit can flush with
-const COLOR_LINES = { crown: ["diamonds", "hearts"], owl: ["spades", "clubs"] };
-const SUIT_COLOR_LINE = { spades: "black", clubs: "black", hearts: "red", diamonds: "red", crown: "red", owl: "black" };
 
 const PHASES = {
   START: "start",
@@ -58,16 +50,6 @@ function createDeck(owner) {
   return deck;
 }
 
-function createCommunalDeck() {
-  const deck = [];
-  for (const suit of COMMUNAL_SUITS) {
-    for (let v = 2; v <= 14; v++) {
-      deck.push({ suit, value: v, id: `${v}-${suit}-communal`, isCommunal: true });
-    }
-  }
-  return deck;
-}
-
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
@@ -75,35 +57,15 @@ function shuffle(arr) {
 }
 
 function isFlush(cards) {
-  // Color-line flush rules:
-  // 1. All STANDARD (non-communal) cards must share the SAME suit
-  // 2. COMMUNAL cards (crown/owl) are flexible — they just need to be on the
-  //    compatible color line for that suit (crown=red for hearts/diamonds, owl=black for spades/clubs)
-  // Example: 4 spades + 1 owl = flush ✓ (all standard cards are spades, owl is black-compatible)
-  // Example: 3 spades + 1 club + 1 owl = NOT flush ✗ (spades ≠ clubs)
-  const standardCards = cards.filter(c => !c.isCommunal);
-  const communalCards = cards.filter(c => c.isCommunal);
-
-  // If no standard cards, check if all communal cards share a color line
-  if (standardCards.length === 0) {
-    if (communalCards.length === 0) return false;
-    const colorLine = SUIT_COLOR_LINE[communalCards[0].suit];
-    return communalCards.every(c => SUIT_COLOR_LINE[c.suit] === colorLine);
-  }
-
-  // All standard cards must be the exact same suit
-  const baseSuit = standardCards[0].suit;
-  if (!standardCards.every(c => c.suit === baseSuit)) return false;
-
-  // Communal cards must be on the compatible color line
-  const baseColorLine = SUIT_COLOR_LINE[baseSuit];
-  return communalCards.every(c => SUIT_COLOR_LINE[c.suit] === baseColorLine);
+  // Standard flush: all cards share the same suit (regardless of source deck)
+  return cards.every(c => c.suit === cards[0].suit);
 }
 
 function isStraight(values) {
   const sorted = [...values].sort((a, b) => a - b);
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i] !== sorted[i-1] + 1) {
+      // Check ace-low straight (A-2-3-4-5)
       if (sorted.includes(14)) {
         const aceLow = sorted.map(v => v === 14 ? 1 : v).sort((a, b) => a - b);
         let ok = true;
@@ -142,7 +104,7 @@ function evaluate5CardHand(cards) {
   const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
   const groups = Object.entries(counts).map(([v, c]) => ({ value: +v, count: c })).sort((a, b) => b.count - a.count || b.value - a.value);
   const quads = groups.filter(g => g.count === 4), trips = groups.filter(g => g.count === 3), pairs = groups.filter(g => g.count === 2);
-  // 5-of-a-kind: possible with dual personal decks (same card from both decks + communal)
+  // 5-of-a-kind: possible with independent decks (same card from player deck + pot deck)
   const fives = groups.filter(g => g.count === 5);
   if (fives.length) return { rank: 10, name: "Five of a Kind", kickers: [fives[0].value] };
   if (straight.yes && flush && sorted[0] === 14 && sorted[sorted.length-1] === 10) return { rank: 9, name: "Royal Flush", kickers: [14] };
@@ -180,8 +142,7 @@ function expandSpecialCards(cards) {
   for (const card of cards) {
     const newHands = [];
     if (card.isWild) {
-      const allSuits = [...SUITS, ...COMMUNAL_SUITS];
-      for (const suit of allSuits) {
+      for (const suit of SUITS) {
         for (let v = 2; v <= 14; v++) {
           for (const h of hands) {
             newHands.push([...h, { suit, value: v, id: card.id }]);
@@ -372,21 +333,13 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
       else if (count >= 2) score += 6;
     }
     
-    // Flush draw: count by standard suit (communal cards count toward their color line)
+    // Flush draw
     const suitCounts = {};
-    for (const c of allCards) {
-      if (c.isCommunal) {
-        // Communal cards contribute to all compatible standard suits
-        const compatible = COLOR_LINES[c.suit] || [];
-        for (const cs of compatible) suitCounts[cs] = (suitCounts[cs] || 0) + 1;
-      } else {
-        suitCounts[c.suit] = (suitCounts[c.suit] || 0) + 1;
-      }
-    }
-    const maxSuitFlush = Math.max(0, ...Object.values(suitCounts));
-    if (maxSuitFlush >= 5) score += 15;
-    else if (maxSuitFlush === 4) score += 7;
-    else if (maxSuitFlush === 3) score += 2;
+    for (const c of allCards) suitCounts[c.suit] = (suitCounts[c.suit] || 0) + 1;
+    const maxSuit = Math.max(...Object.values(suitCounts));
+    if (maxSuit >= 5) score += 15;
+    else if (maxSuit === 4) score += 7;
+    else if (maxSuit === 3) score += 2;
     
     // Straight draw
     const uniqueVals = [...new Set(allCards.map(c => c.value))].sort((a, b) => a - b);
@@ -412,11 +365,11 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
     const saveBoost = 1 + read.saveHighCards; // opponent model says save more? boost this
     score += highCardBonus * roundMultiplier * saveBoost;
     
-    // Synergy with communal cards (color-line aware)
+    // Synergy with communal cards
     for (const cc of communal) {
       for (const k of kept) {
         if (k.value === cc.value) score += 3;
-        if (SUIT_COLOR_LINE[k.suit] === SUIT_COLOR_LINE[cc.suit]) score += 0.3;
+        if (k.suit === cc.suit) score += 0.3;
       }
     }
     
@@ -446,21 +399,16 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
     // Unpaired low cards are weak
     if ((counts[card.value] || 0) <= 1 && card.value <= 8) weakness += 2;
 
-    // Cards that don't contribute to flush potential (suit-based with communal compat)
-    const cardSuit = card.suit;
-    const cardColorLine = SUIT_COLOR_LINE[cardSuit];
-    const suitFlushCount = allCards.filter(c => {
-      if (c.isCommunal) return SUIT_COLOR_LINE[c.suit] === cardColorLine;
-      return c.suit === cardSuit;
-    }).length;
-    if (suitFlushCount <= 1) weakness += 0.5;
+    // Cards that don't contribute to flush potential
+    const suitCount = allCards.filter(c => c.suit === card.suit).length;
+    if (suitCount <= 1) weakness += 0.5;
 
     // Cards isolated from straight potential
     const nearby = allCards.filter(c => Math.abs(c.value - card.value) <= 2 && c !== card).length;
     if (nearby === 0) weakness += 0.5;
 
-    // No synergy with communal cards (suit-flush aware)
-    const communalSynergy = communal.some(c => c.value === card.value || SUIT_COLOR_LINE[c.suit] === cardColorLine);
+    // No synergy with communal cards
+    const communalSynergy = communal.some(c => c.value === card.value || c.suit === card.suit);
     if (!communalSynergy) weakness += 1;
 
     return weakness;
@@ -527,17 +475,10 @@ function aiSelectCards(hand, communalCards, numToSelect, round, opponentModel) {
       else if (count >= 2) score += 4;
     }
     
-    // Flush potential in remaining (suit-based, communal cards help compatible suits)
+    // Flush potential in remaining
     const futureSuitCounts = {};
-    for (const c of kept) {
-      if (c.isCommunal) {
-        const compatible = COLOR_LINES[c.suit] || [];
-        for (const cs of compatible) futureSuitCounts[cs] = (futureSuitCounts[cs] || 0) + 1;
-      } else {
-        futureSuitCounts[c.suit] = (futureSuitCounts[c.suit] || 0) + 1;
-      }
-    }
-    const maxFutureSuit = Math.max(0, ...Object.values(futureSuitCounts));
+    for (const c of kept) futureSuitCounts[c.suit] = (futureSuitCounts[c.suit] || 0) + 1;
+    const maxFutureSuit = Object.keys(futureSuitCounts).length > 0 ? Math.max(...Object.values(futureSuitCounts)) : 0;
     if (maxFutureSuit >= 3) score += 3;
     
     // Straight potential in remaining
@@ -686,9 +627,9 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
   if (!card) return null;
   const isWild = card.isWild;
   const isDual = card.isDualSuit;
-  const isCommunal = card.isCommunal;
-  const color = isWild ? "#b8860b" : isDual ? "#7b2d8e" : isCommunal ? COMMUNAL_SUIT_COLORS[card.suit] : SUIT_COLORS[card.suit];
-  const symbol = isWild ? "★" : isDual ? (SUIT_SYMBOLS.spades + SUIT_SYMBOLS.hearts) : isCommunal ? COMMUNAL_SUIT_SYMBOLS[card.suit] : SUIT_SYMBOLS[card.suit];
+  const isPot = card.source === "pot"; // subtle indicator for pot-sourced cards
+  const color = isWild ? "#b8860b" : isDual ? "#7b2d8e" : SUIT_COLORS[card.suit];
+  const symbol = isWild ? "★" : isDual ? (SUIT_SYMBOLS.spades + SUIT_SYMBOLS.hearts) : SUIT_SYMBOLS[card.suit];
   const label = isWild ? "W" : VALUE_NAMES[card.value];
   const w = small ? 58 : 88;
   const h = small ? 80 : 120;
@@ -700,17 +641,13 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
       style={{
         width: w, height: h, borderRadius: 8, flexShrink: 0,
         marginLeft: overlap ? (small ? -26 : -32) : 0,
-        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : isWild ? "2px solid #ffd54f" : isDual ? "2px solid #9c27b0" : isCommunal ? (card.suit === "crown" ? "2px solid #e74c3c" : "2px solid #34495e") : "2px solid rgba(0,0,0,0.15)",
+        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : isWild ? "2px solid #ffd54f" : isDual ? "2px solid #9c27b0" : "2px solid rgba(0,0,0,0.15)",
         background: faceDown
           ? "linear-gradient(135deg, #2c3e50 0%, #1a252f 50%, #2c3e50 100%)"
           : isWild
           ? "linear-gradient(145deg, #fff8e1 0%, #ffd54f 50%, #ffb300 100%)"
           : isDual
           ? "linear-gradient(145deg, #f3e5f5 0%, #e1bee7 100%)"
-          : isCommunal
-          ? (card.suit === "crown"
-            ? "linear-gradient(145deg, #fff0f0 0%, #ffd6d6 100%)"
-            : "linear-gradient(145deg, #e8eaf6 0%, #c5cae9 100%)")
           : "linear-gradient(145deg, #fefefe 0%, #f0ead6 100%)",
         display: "flex", flexDirection: "column", justifyContent: "space-between",
         padding: small ? "4px 5px" : "6px 8px",
@@ -950,15 +887,14 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
 }
 
 // ─── Deck Inspector ──────────────────────────────────────────────────────────
-function DeckInspector({ cards, title, onClose, playedCardIds }) {
-  const playedSet = new Set(playedCardIds || []);
-  // Group by suit, sort by value
+function DeckInspector({ cards, title, subtitle, onClose, markedIds, culledIds }) {
+  const markedSet = new Set(markedIds || []);
+  const culledSet = new Set(culledIds || []);
   const bySuit = {};
   for (const c of cards) {
     if (!bySuit[c.suit]) bySuit[c.suit] = [];
     bySuit[c.suit].push(c);
   }
-  const suitOrder = title.includes("Communal") ? COMMUNAL_SUITS : SUITS;
 
   return (
     <div style={{
@@ -983,7 +919,7 @@ function DeckInspector({ cards, title, onClose, playedCardIds }) {
         onClick={(e) => e.stopPropagation()}
         onTouchEnd={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <div style={{
             fontSize: 18, fontWeight: 700, fontFamily: "'Georgia', serif",
             background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)",
@@ -999,33 +935,32 @@ function DeckInspector({ cards, title, onClose, playedCardIds }) {
             }}
           >✕</button>
         </div>
-        <div style={{ fontSize: 11, opacity: 0.5, marginBottom: 12 }}>
-          {cards.length} cards · Cards played this session shown dimmed
-        </div>
-        {suitOrder.map(suit => {
+        {subtitle && <div style={{ fontSize: 11, opacity: 0.5, marginBottom: 10 }}>{subtitle}</div>}
+        {SUITS.map(suit => {
           const suitCards = (bySuit[suit] || []).sort((a, b) => a.value - b.value);
           if (suitCards.length === 0) return null;
-          const isCommunalSuit = COMMUNAL_SUITS.includes(suit);
-          const suitSymbol = isCommunalSuit ? COMMUNAL_SUIT_SYMBOLS[suit] : SUIT_SYMBOLS[suit];
-          const suitColor = isCommunalSuit ? COMMUNAL_SUIT_COLORS[suit] : SUIT_COLORS[suit];
+          const suitSymbol = SUIT_SYMBOLS[suit];
+          const suitColor = SUIT_COLORS[suit];
           return (
             <div key={suit} style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: suitColor, marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
                 <span style={{ fontSize: 16 }}>{suitSymbol}</span>
                 <span style={{ textTransform: "capitalize" }}>{suit}</span>
-                {isCommunalSuit && <span style={{ fontSize: 10, opacity: 0.5 }}>(compat: {COLOR_LINES[suit].join(", ")})</span>}
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                 {suitCards.map(c => {
-                  const played = playedSet.has(c.id);
+                  const marked = markedSet.has(c.id);
+                  const culled = culledSet.has(c.id);
                   return (
                     <div key={c.id} style={{
                       width: 36, height: 48, borderRadius: 4,
-                      background: played ? "rgba(0,0,0,0.3)" : (isCommunalSuit ? (suit === "crown" ? "rgba(192,57,43,0.12)" : "rgba(52,73,94,0.15)") : "rgba(255,255,255,0.06)"),
-                      border: played ? "1px solid rgba(255,255,255,0.05)" : "1px solid rgba(255,255,255,0.12)",
+                      background: culled ? "rgba(231,76,60,0.15)" : marked ? "rgba(0,0,0,0.3)" : "rgba(255,255,255,0.06)",
+                      border: culled ? "1px solid rgba(231,76,60,0.3)" : marked ? "1px solid rgba(255,255,255,0.05)" : "1px solid rgba(255,255,255,0.12)",
                       display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                      fontSize: 12, fontWeight: 700, color: played ? "rgba(255,255,255,0.2)" : suitColor,
-                      opacity: played ? 0.4 : 1,
+                      fontSize: 12, fontWeight: 700,
+                      color: (culled || marked) ? "rgba(255,255,255,0.2)" : suitColor,
+                      opacity: (culled || marked) ? 0.4 : 1,
+                      textDecoration: culled ? "line-through" : "none",
                     }}>
                       <span>{VALUE_NAMES[c.value]}</span>
                       <span style={{ fontSize: 10 }}>{suitSymbol}</span>
@@ -1043,17 +978,15 @@ function DeckInspector({ cards, title, onClose, playedCardIds }) {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 function CommunalPoker() {
-  const [deck, setDeck] = useState([]);              // communal draw pile
-  const [playerDeck, setPlayerDeck] = useState([]);   // player's remaining personal deck
-  const [aiDeck, setAiDeck] = useState([]);           // AI's remaining personal deck
+  // Three-deck system (52 cards each)
+  const [playerDeck, setPlayerDeck] = useState([]);         // Player's draw pile
+  const [aiDeck, setAiDeck] = useState([]);                 // AI's draw pile
+  const [potDeck, setPotDeck] = useState([]);               // Pot's draw pile (communal cards drawn from here)
   const [playerHand, setPlayerHand] = useState([]);
   const [aiHand, setAiHand] = useState([]);
   const [communalCards, setCommunalCards] = useState([]);
-  // Deck Inspector snapshots (captured at session start)
-  const [inspectorPlayerDeck, setInspectorPlayerDeck] = useState([]);
-  const [inspectorAiDeck, setInspectorAiDeck] = useState([]);
-  const [inspectorCommunalDeck, setInspectorCommunalDeck] = useState([]);
-  const [showInspector, setShowInspector] = useState(null); // null | "player" | "ai" | "communal"
+  const [showInspector, setShowInspector] = useState(null);    // null | "player" | "ai" | "pot"
+  const [pendingPowerCards, setPendingPowerCards] = useState([]); // Power cards from store
   const [playerPlayed, setPlayerPlayed] = useState([[], [], []]);
   const [aiPlayed, setAiPlayed] = useState([[], [], []]);
   const [selected, setSelected] = useState(new Set());
@@ -1069,52 +1002,45 @@ function CommunalPoker() {
   const [storeCart, setStoreCart] = useState(new Set());
   const opponentModelRef = useRef(createOpponentModel());
 
-  const startGame = useCallback(() => {
+  // Initialize three 52-card decks, deal hands, go straight to R1
+  const initSession = useCallback((sessionNum, powerCards = [], resetBank = false) => {
     const pd = shuffle(createDeck("player"));
     const ad = shuffle(createDeck("ai"));
-    const cd = shuffle(createCommunalDeck());
-    setPlayerHand(pd.slice(0, 10).sort((a, b) => b.value - a.value));
-    setPlayerDeck(pd.slice(10));
-    setAiHand(ad.slice(0, 10).sort((a, b) => b.value - a.value));
-    setAiDeck(ad.slice(10));
-    setDeck(cd); // communal draw pile
-    // Inspector snapshots
-    setInspectorPlayerDeck([...pd]);
-    setInspectorAiDeck([...ad]);
-    setInspectorCommunalDeck([...cd]);
-    setCommunalCards([]); setPlayerPlayed([[], [], []]); setAiPlayed([[], [], []]);
-    setSelected(new Set()); setBankScore(0);
+    const potd = shuffle(createDeck("pot"));
+
+    // Deal 10 cards to each player
+    const np = powerCards.length;
+    const pHand = [...powerCards, ...pd.slice(0, 10 - np)].sort((a, b) => (b.isWild ? 15 : b.value) - (a.isWild ? 15 : a.value));
+    const pDeckRemain = pd.slice(10 - np);
+    const aHand = ad.slice(0, 10).sort((a, b) => b.value - a.value);
+    const aDeckRemain = ad.slice(10);
+
+    setPlayerDeck(pDeckRemain);
+    setAiDeck(aDeckRemain);
+    setPotDeck(potd);
+    setPlayerHand(pHand);
+    setAiHand(aHand);
+    setCommunalCards([]);
+    setPlayerPlayed([[], [], []]); setAiPlayed([[], [], []]);
+    setSelected(new Set());
+    if (resetBank) setBankScore(0);
     setRoundResults([]); setShowAiCards(false);
     setAiDiscardCounts([]);
-    setCurrentSession(0);
+    setCurrentSession(sessionNum);
     setStoreCart(new Set());
     setShowInspector(null);
+    setPendingPowerCards([]);
     setPhase(PHASES.R1_COMMUNAL); setMessage("");
   }, []);
 
-  // Start next session (preserves scores, resets round state)
+  const startGame = useCallback(() => {
+    initSession(0, [], true);
+  }, [initSession]);
+
+  // Start next session — goes through pot reveal + culling again
   const startNextSession = useCallback((sessionNum, powerCards = []) => {
-    const pd = shuffle(createDeck("player"));
-    const ad = shuffle(createDeck("ai"));
-    const cd = shuffle(createCommunalDeck());
-    const np = powerCards.length;
-    setPlayerHand([...powerCards, ...pd.slice(0, 10 - np)].sort((a, b) => (b.isWild ? 15 : b.value) - (a.isWild ? 15 : a.value)));
-    setPlayerDeck(pd.slice(10 - np));
-    setAiHand(ad.slice(0, 10).sort((a, b) => b.value - a.value));
-    setAiDeck(ad.slice(10));
-    setDeck(cd); // communal draw pile
-    // Inspector snapshots
-    setInspectorPlayerDeck([...pd]);
-    setInspectorAiDeck([...ad]);
-    setInspectorCommunalDeck([...cd]);
-    setCommunalCards([]); setPlayerPlayed([[], [], []]); setAiPlayed([[], [], []]);
-    setSelected(new Set()); setRoundResults([]);
-    setShowAiCards(false);
-    setAiDiscardCounts([]);
-    setCurrentSession(sessionNum);
-    setShowInspector(null);
-    setPhase(PHASES.R1_COMMUNAL); setMessage("");
-  }, []);
+    initSession(sessionNum, powerCards, false);
+  }, [initSession]);
 
   const toggleStoreItem = useCallback((item) => {
     setStoreCart(prev => {
@@ -1157,7 +1083,7 @@ function CommunalPoker() {
   }, []);
 
   const placeCommunal = useCallback(() => {
-    const nd = [...deck]; const card = nd.shift(); setDeck(nd); // draws from communal deck
+    const nd = [...potDeck]; const card = nd.shift(); setPotDeck(nd);
     setCommunalCards(prev => [...prev, card]); setSelected(new Set()); setShowAiCards(false);
     const rn = phase === PHASES.R1_COMMUNAL ? 1 : phase === PHASES.R2_COMMUNAL ? 2 : 3;
     setMessage(`Round ${rn}: A communal card is revealed!`);
@@ -1166,7 +1092,7 @@ function CommunalPoker() {
       else if (phase === PHASES.R2_COMMUNAL) setPhase(PHASES.R2_DISCARD);
       else setPhase(PHASES.R3_DISCARD);
     }, 800);
-  }, [deck, phase]);
+  }, [potDeck, phase]);
 
   useEffect(() => {
     if ([PHASES.R1_COMMUNAL, PHASES.R2_COMMUNAL, PHASES.R3_COMMUNAL].includes(phase)) placeCommunal();
@@ -1196,7 +1122,7 @@ function CommunalPoker() {
       else if (phase === PHASES.R2_DISCARD) setPhase(PHASES.R2_PLAY);
       else setPhase(PHASES.R3_PLAY);
     }, 600);
-  }, [roundInfo, selected, deck, playerHand, aiHand, communalCards, phase]);
+  }, [roundInfo, selected, playerDeck, aiDeck, playerHand, aiHand, communalCards, phase]);
 
   const confirmPlay = useCallback(() => {
     const { cardsToPlay, round, points } = roundInfo;
@@ -1312,11 +1238,10 @@ function CommunalPoker() {
 
         {/* Deck Inspector overlay */}
         {showInspector && (() => {
-          // Gather all played card IDs this session
           const playedIds = [...playerPlayed.flat(), ...aiPlayed.flat(), ...communalCards].map(c => c.id);
-          if (showInspector === "player") return <DeckInspector cards={inspectorPlayerDeck} title="Your Deck (52)" onClose={() => setShowInspector(null)} playedCardIds={playedIds} />;
-          if (showInspector === "ai") return <DeckInspector cards={inspectorAiDeck} title="Opponent's Deck (52)" onClose={() => setShowInspector(null)} playedCardIds={playedIds} />;
-          if (showInspector === "communal") return <DeckInspector cards={inspectorCommunalDeck} title="Communal Deck (26)" onClose={() => setShowInspector(null)} playedCardIds={playedIds} />;
+          if (showInspector === "player") return <DeckInspector cards={[...playerHand, ...playerDeck, ...playerPlayed.flat()]} title="Your Deck (52 cards)" subtitle="Dealt and played cards shown dimmed" onClose={() => setShowInspector(null)} markedIds={playedIds} culledIds={[]} />;
+          if (showInspector === "ai") return <DeckInspector cards={createDeck("ai")} title="Opponent's Deck (52 cards)" subtitle="Standard 52-card deck" onClose={() => setShowInspector(null)} markedIds={[]} culledIds={[]} />;
+          if (showInspector === "pot") return <DeckInspector cards={[...communalCards, ...potDeck]} title="Pot Deck (52 cards)" subtitle="Cards dealt to the board shown dimmed" onClose={() => setShowInspector(null)} markedIds={communalCards.map(c => c.id)} culledIds={[]} />;
           return null;
         })()}
 
@@ -1347,15 +1272,15 @@ function CommunalPoker() {
               }}
             >Foe Deck</button>
             <button
-              onClick={() => setShowInspector("communal")}
-              onTouchEnd={(e) => { e.preventDefault(); setShowInspector("communal"); }}
+              onClick={() => setShowInspector("pot")}
+              onTouchEnd={(e) => { e.preventDefault(); setShowInspector("pot"); }}
               style={{
                 padding: "4px 8px", borderRadius: 6, fontSize: 10, fontWeight: 600,
                 background: "rgba(241,196,15,0.15)", border: "1px solid rgba(241,196,15,0.3)",
                 color: "#f1c40f", cursor: "pointer", touchAction: "manipulation",
                 WebkitTapHighlightColor: "transparent",
               }}
-            >Pot Deck</button>
+            >Pot Pool</button>
           </div>
         )}
 
@@ -1419,12 +1344,10 @@ function CommunalPoker() {
               <div style={{ fontSize: 13, lineHeight: 1.8, opacity: 0.9 }}>
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Overview</div>
                 <p style={{ marginBottom: 12 }}>
-                  Slow Burn Poker is a card strategy game played across 3 sessions of 3 rounds each.
-                  Each player has their own 52-card deck — you each receive 10 cards per session.
-                  A shared Communal Deck (26 cards) has two special suits: Crown 👑 (red, flushes with
-                  hearts/diamonds) and Owl 🦉 (black, flushes with spades/clubs). Communal cards
-                  are added to The Pot each round. Win rounds to push your Score Bank up. Keep it
-                  positive across all 3 sessions to win.
+                  Slow Burn Poker is a card strategy game with three independent 52-card decks —
+                  yours, the opponent's, and the Pot. Standard poker suits and rankings.
+                  Win rounds to push your Score Bank up. Keep it positive across all
+                  3 sessions to win.
                 </p>
 
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Each Round</div>
@@ -1449,20 +1372,14 @@ function CommunalPoker() {
                   <span style={{ fontWeight: 600 }}>Round III</span> — Play 4 cards + 3 pot cards = best 5 of 7 (300 pts)
                 </p>
 
-                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Dual Deck & Communal</div>
+                <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Three Decks</div>
                 <p style={{ marginBottom: 6 }}>
-                  Each player has their own 52-card deck. The Pot draws from a separate 26-card
-                  Communal Deck with two special suits:
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <span style={{ color: "#c0392b", fontWeight: 600 }}>Crown 👑</span> — Red suit. Flushes with Hearts and Diamonds.
-                </p>
-                <p style={{ marginBottom: 6 }}>
-                  <span style={{ color: "#1a1a2e", fontWeight: 600, background: "rgba(255,255,255,0.7)", padding: "0 4px", borderRadius: 3 }}>Owl 🦉</span> — Black suit. Flushes with Spades and Clubs.
+                  Three independent 52-card decks: yours, the opponent's, and the Pot.
+                  Each deck is shuffled independently — the same card can appear in your hand and the communal pot.
                 </p>
                 <p style={{ marginBottom: 12 }}>
-                  With dual decks, <span style={{ color: "#f1c40f", fontWeight: 600 }}>Five of a Kind</span> is
-                  possible in Rounds II & III — it ranks above Royal Flush!
+                  With independent decks, <span style={{ color: "#f1c40f", fontWeight: 600 }}>Five of a Kind</span> is
+                  possible — your cards + pot cards can share the same rank. It ranks above Royal Flush!
                 </p>
 
                 <div style={{ fontWeight: 700, color: "#f1c40f", fontSize: 14, marginBottom: 4 }}>Scoring</div>
@@ -1490,7 +1407,7 @@ function CommunalPoker() {
                   \u2022 Watch the Foe's discard count — if they keep all cards, they're confident.
                 </p>
                 <p style={{ marginBottom: 6 }}>
-                  \u2022 The Pot cards are shared — build hands that synergize with what's showing.
+                  \u2022 The Pot cards are shared — build hands that synergize with what's on the board.
                 </p>
                 <p style={{ marginBottom: 6 }}>
                   \u2022 Use the live hand preview to see your hand rank as you select cards.
@@ -1499,6 +1416,8 @@ function CommunalPoker() {
             </div>
           </div>
         )}
+
+
 
         {/* Start */}
         {phase === PHASES.START && (
@@ -1509,7 +1428,7 @@ function CommunalPoker() {
               WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
             }}>SLOW BURN POKER</div>
             <div style={{ fontSize: 14, opacity: 0.6, maxWidth: 380, textAlign: "center", lineHeight: 1.6 }}>
-              Three sessions. Nine rounds. Dual decks. Your Score Bank starts at zero. Win rounds to push it up, lose rounds and it drops. Crown 👑 flushes red. Owl 🦉 flushes black. Stay positive after 3 sessions to win.
+              Three sessions. Nine rounds. Three full decks. Your Score Bank starts at zero. Every card counts. Stay positive after 3 sessions to win.
             </div>
             <button onClick={startGame} style={btn("#27ae60", "#2ecc71")}>Deal Cards</button>
           </div>
