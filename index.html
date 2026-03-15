@@ -61,13 +61,17 @@ function isFlush(cards) {
   return cards.every(c => c.suit === cards[0].suit);
 }
 
+// gamePhaseMode: 1 = standard (A-low = 1), 2 = no 2s (A-low = 2, connects to 3)
+let currentGamePhase = 1;
+
 function isStraight(values) {
   const sorted = [...values].sort((a, b) => a - b);
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i] !== sorted[i-1] + 1) {
-      // Check ace-low straight (A-2-3-4-5)
+      // Check ace-low straight
       if (sorted.includes(14)) {
-        const aceLow = sorted.map(v => v === 14 ? 1 : v).sort((a, b) => a - b);
+        const aceLowVal = currentGamePhase === 2 ? 2 : 1; // Phase 2: A connects to 3 (A=2)
+        const aceLow = sorted.map(v => v === 14 ? aceLowVal : v).sort((a, b) => a - b);
         let ok = true;
         for (let j = 1; j < aceLow.length; j++) { if (aceLow[j] !== aceLow[j-1] + 1) { ok = false; break; } }
         if (ok) return { yes: true, high: aceLow[aceLow.length - 1] };
@@ -348,11 +352,13 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
       if (uniqueVals[i] === uniqueVals[i-1] + 1) { run++; maxRun = Math.max(maxRun, run); }
       else if (uniqueVals[i] !== uniqueVals[i-1]) run = 1;
     }
-    if (uniqueVals.includes(14) && uniqueVals.includes(2)) {
+    // Ace-low straight draw: Phase 1 = A-2-3-4-5, Phase 2 = A-3-4-5-6 (A connects to 3)
+    const aceLowStart = currentGamePhase === 2 ? 3 : 2;
+    if (uniqueVals.includes(14) && uniqueVals.includes(aceLowStart)) {
       let aceLowRun = 2;
-      if (uniqueVals.includes(3)) aceLowRun++;
-      if (uniqueVals.includes(4)) aceLowRun++;
-      if (uniqueVals.includes(5)) aceLowRun++;
+      for (let step = 1; step <= 3; step++) {
+        if (uniqueVals.includes(aceLowStart + step)) aceLowRun++;
+      }
       maxRun = Math.max(maxRun, aceLowRun);
     }
     if (maxRun >= 5) score += 14;
@@ -1000,13 +1006,32 @@ function CommunalPoker() {
   const [showRules, setShowRules] = useState(false);
   const [currentSession, setCurrentSession] = useState(0);
   const [storeCart, setStoreCart] = useState(new Set());
+  const [gamePhase, setGamePhase] = useState(1); // 1 = standard, 2 = no 2s, AI gets extra face cards
   const opponentModelRef = useRef(createOpponentModel());
 
-  // Initialize three 52-card decks, deal hands, go straight to R1
-  const initSession = useCallback((sessionNum, powerCards = [], resetBank = false) => {
-    const pd = shuffle(createDeck("player"));
-    const ad = shuffle(createDeck("ai"));
-    const potd = shuffle(createDeck("pot"));
+  // Initialize three decks, deal hands, go straight to R1
+  const initSession = useCallback((sessionNum, powerCards = [], resetBank = false, phaseMode) => {
+    const gp = phaseMode !== undefined ? phaseMode : gamePhase;
+    currentGamePhase = gp;
+    let pd = shuffle(createDeck("player"));
+    let ad = shuffle(createDeck("ai"));
+    let potd = shuffle(createDeck("pot"));
+
+    if (gp === 2) {
+      // Phase 2: remove all 2s from every deck
+      pd = pd.filter(c => c.value !== 2);
+      ad = ad.filter(c => c.value !== 2);
+      potd = potd.filter(c => c.value !== 2);
+
+      // Add 4 random face cards (J/Q/K/A) to AI deck
+      const faceValues = [11, 12, 13, 14];
+      for (let i = 0; i < 4; i++) {
+        const v = faceValues[Math.floor(Math.random() * faceValues.length)];
+        const s = SUITS[Math.floor(Math.random() * SUITS.length)];
+        ad.push({ suit: s, value: v, id: `${v}-${s}-ai-extra-${i}` });
+      }
+      ad = shuffle(ad);
+    }
 
     // Deal 10 cards to each player
     const np = powerCards.length;
@@ -1031,11 +1056,11 @@ function CommunalPoker() {
     setShowInspector(null);
     setPendingPowerCards([]);
     setPhase(PHASES.R1_COMMUNAL); setMessage("");
-  }, []);
+  }, [gamePhase]);
 
   const startGame = useCallback(() => {
-    initSession(0, [], true);
-  }, [initSession]);
+    initSession(0, [], true, gamePhase);
+  }, [initSession, gamePhase]);
 
   // Start next session — goes through pot reveal + culling again
   const startNextSession = useCallback((sessionNum, powerCards = []) => {
@@ -1239,9 +1264,15 @@ function CommunalPoker() {
         {/* Deck Inspector overlay */}
         {showInspector && (() => {
           const playedIds = [...playerPlayed.flat(), ...aiPlayed.flat(), ...communalCards].map(c => c.id);
-          if (showInspector === "player") return <DeckInspector cards={[...playerHand, ...playerDeck, ...playerPlayed.flat()]} title="Your Deck (52 cards)" subtitle="Dealt and played cards shown dimmed" onClose={() => setShowInspector(null)} markedIds={playedIds} culledIds={[]} />;
-          if (showInspector === "ai") return <DeckInspector cards={createDeck("ai")} title="Opponent's Deck (52 cards)" subtitle="Standard 52-card deck" onClose={() => setShowInspector(null)} markedIds={[]} culledIds={[]} />;
-          if (showInspector === "pot") return <DeckInspector cards={[...communalCards, ...potDeck]} title="Pot Deck (52 cards)" subtitle="Cards dealt to the board shown dimmed" onClose={() => setShowInspector(null)} markedIds={communalCards.map(c => c.id)} culledIds={[]} />;
+          const pCards = [...playerHand, ...playerDeck, ...playerPlayed.flat()];
+          const pSize = pCards.length;
+          const aCards = [...aiHand, ...aiDeck, ...aiPlayed.flat()];
+          const aSize = aCards.length;
+          const potCards = [...communalCards, ...potDeck];
+          const potSize = potCards.length;
+          if (showInspector === "player") return <DeckInspector cards={pCards} title={`Your Deck (${pSize} cards)`} subtitle="Dealt and played cards shown dimmed" onClose={() => setShowInspector(null)} markedIds={playedIds} culledIds={[]} />;
+          if (showInspector === "ai") return <DeckInspector cards={aCards} title={`Opponent's Deck (${aSize} cards)`} subtitle={gamePhase === 2 ? "48 base + 4 bonus face cards" : "Standard 52-card deck"} onClose={() => setShowInspector(null)} markedIds={[]} culledIds={[]} />;
+          if (showInspector === "pot") return <DeckInspector cards={potCards} title={`Pot Deck (${potSize} cards)`} subtitle="Cards dealt to the board shown dimmed" onClose={() => setShowInspector(null)} markedIds={communalCards.map(c => c.id)} culledIds={[]} />;
           return null;
         })()}
 
@@ -1430,6 +1461,51 @@ function CommunalPoker() {
             <div style={{ fontSize: 14, opacity: 0.6, maxWidth: 380, textAlign: "center", lineHeight: 1.6 }}>
               Three sessions. Nine rounds. Three full decks. Your Score Bank starts at zero. Every card counts. Stay positive after 3 sessions to win.
             </div>
+
+            {/* Phase Toggle */}
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
+              <span style={{
+                fontSize: 13, fontWeight: gamePhase === 1 ? 700 : 400,
+                color: gamePhase === 1 ? "#f1c40f" : "rgba(255,255,255,0.4)",
+                transition: "all 0.2s",
+              }}>Phase 1</span>
+              <div
+                onClick={() => setGamePhase(p => p === 1 ? 2 : 1)}
+                onTouchEnd={(e) => { e.preventDefault(); setGamePhase(p => p === 1 ? 2 : 1); }}
+                style={{
+                  width: 52, height: 28, borderRadius: 14, cursor: "pointer",
+                  background: gamePhase === 2 ? "rgba(231,76,60,0.4)" : "rgba(255,255,255,0.15)",
+                  border: gamePhase === 2 ? "1px solid rgba(231,76,60,0.6)" : "1px solid rgba(255,255,255,0.2)",
+                  position: "relative", transition: "all 0.25s ease",
+                  touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
+                }}
+              >
+                <div style={{
+                  width: 22, height: 22, borderRadius: "50%",
+                  background: gamePhase === 2 ? "#e74c3c" : "rgba(255,255,255,0.5)",
+                  position: "absolute", top: 2,
+                  left: gamePhase === 2 ? 27 : 3,
+                  transition: "all 0.25s ease",
+                  boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
+                }} />
+              </div>
+              <span style={{
+                fontSize: 13, fontWeight: gamePhase === 2 ? 700 : 400,
+                color: gamePhase === 2 ? "#e74c3c" : "rgba(255,255,255,0.4)",
+                transition: "all 0.2s",
+              }}>Phase 2</span>
+            </div>
+
+            {/* Phase description */}
+            <div style={{
+              fontSize: 11, opacity: 0.5, maxWidth: 320, textAlign: "center", lineHeight: 1.5,
+              minHeight: 36, transition: "all 0.2s",
+            }}>
+              {gamePhase === 1
+                ? "Standard rules. Full 52-card decks."
+                : "All 2s removed. Ace connects to 3 in straights. Computer gets 4 extra face cards."}
+            </div>
+
             <button onClick={startGame} style={btn("#27ae60", "#2ecc71")}>Deal Cards</button>
           </div>
         )}
@@ -1453,7 +1529,10 @@ function CommunalPoker() {
             <div style={{ fontSize: 12, opacity: 0.4, marginTop: 2 }}>
               {bankScore > 0 ? "You stayed in the green across 3 sessions!" : bankScore === 0 ? "Dead even — the house wins on a tie." : "The opponent's pressure was too much."}
             </div>
-            <button onClick={startGame} style={btn("#e67e22", "#f39c12")}>Play Again</button>
+            <div style={{ fontSize: 11, opacity: 0.3, marginTop: 4 }}>
+              Played on Phase {gamePhase}
+            </div>
+            <button onClick={() => setPhase(PHASES.START)} onTouchEnd={(e) => { e.preventDefault(); setPhase(PHASES.START); }} style={btn("#e67e22", "#f39c12")}>Play Again</button>
           </div>
         )}
 
