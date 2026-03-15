@@ -70,7 +70,7 @@ function isStraight(values) {
     if (sorted[i] !== sorted[i-1] + 1) {
       // Check ace-low straight
       if (sorted.includes(14)) {
-        const aceLowVal = currentGamePhase === 2 ? 2 : 1; // Phase 2: A connects to 3 (A=2)
+        const aceLowVal = currentGamePhase === 3 ? 3 : currentGamePhase === 2 ? 2 : 1; // Phase 3: A connects to 4 (A=3), Phase 2: A connects to 3 (A=2)
         const aceLow = sorted.map(v => v === 14 ? aceLowVal : v).sort((a, b) => a - b);
         let ok = true;
         for (let j = 1; j < aceLow.length; j++) { if (aceLow[j] !== aceLow[j-1] + 1) { ok = false; break; } }
@@ -353,7 +353,7 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
       else if (uniqueVals[i] !== uniqueVals[i-1]) run = 1;
     }
     // Ace-low straight draw: Phase 1 = A-2-3-4-5, Phase 2 = A-3-4-5-6 (A connects to 3)
-    const aceLowStart = currentGamePhase === 2 ? 3 : 2;
+    const aceLowStart = currentGamePhase === 3 ? 4 : currentGamePhase === 2 ? 3 : 2;
     if (uniqueVals.includes(14) && uniqueVals.includes(aceLowStart)) {
       let aceLowRun = 2;
       for (let step = 1; step <= 3; step++) {
@@ -1006,7 +1006,8 @@ function CommunalPoker() {
   const [showRules, setShowRules] = useState(false);
   const [currentSession, setCurrentSession] = useState(0);
   const [storeCart, setStoreCart] = useState(new Set());
-  const [gamePhase, setGamePhase] = useState(1); // 1 = standard, 2 = no 2s, AI gets extra face cards
+  const [gamePhase, setGamePhase] = useState(1); // 1 = standard, 2 = no 2s + AI extras, 3 = no 2s/3s + more AI extras + streak bonus
+  const [winStreak, setWinStreak] = useState(0); // consecutive player wins (persists across sessions in Phase 3)
   const opponentModelRef = useRef(createOpponentModel());
 
   // Initialize three decks, deal hands, go straight to R1
@@ -1017,15 +1018,23 @@ function CommunalPoker() {
     let ad = shuffle(createDeck("ai"));
     let potd = shuffle(createDeck("pot"));
 
-    if (gp === 2) {
-      // Phase 2: remove all 2s from every deck
+    if (gp >= 2) {
+      // Phase 2+: remove all 2s from every deck
       pd = pd.filter(c => c.value !== 2);
       ad = ad.filter(c => c.value !== 2);
       potd = potd.filter(c => c.value !== 2);
 
-      // Add 4 random face cards (J/Q/K/A) to AI deck
+      if (gp === 3) {
+        // Phase 3: also remove all 3s
+        pd = pd.filter(c => c.value !== 3);
+        ad = ad.filter(c => c.value !== 3);
+        potd = potd.filter(c => c.value !== 3);
+      }
+
+      // Add random face cards (J/Q/K/A) to AI deck: 4 in Phase 2, 6 in Phase 3
       const faceValues = [11, 12, 13, 14];
-      for (let i = 0; i < 4; i++) {
+      const extraCount = gp === 3 ? 6 : 4;
+      for (let i = 0; i < extraCount; i++) {
         const v = faceValues[Math.floor(Math.random() * faceValues.length)];
         const s = SUITS[Math.floor(Math.random() * SUITS.length)];
         ad.push({ suit: s, value: v, id: `${v}-${s}-ai-extra-${i}` });
@@ -1059,6 +1068,7 @@ function CommunalPoker() {
   }, [gamePhase]);
 
   const startGame = useCallback(() => {
+    setWinStreak(0); // reset streak on new game
     initSession(0, [], true, gamePhase);
   }, [initSession, gamePhase]);
 
@@ -1168,28 +1178,38 @@ function CommunalPoker() {
     const ae = evaluateHandWithSpecials(afh);
     const res = compareHands(pe, ae);
     const rankDiff = Math.abs(pe.rank - ae.rank);
-    let w, totalPoints;
-    if (res > 0) { 
+    let w, totalPoints, streakMultiplier = 1;
+    if (res > 0) {
       w = "player"; totalPoints = points + (rankDiff * 50);
-      setBankScore(s => s + totalPoints); 
-    } else if (res < 0) { 
+      // Phase 3 streak bonus
+      const newStreak = winStreak + 1;
+      if (gamePhase === 3 && newStreak >= 2) {
+        streakMultiplier = 1 + (0.25 * (newStreak - 1)); // 2 wins=1.25x, 3=1.5x, 4=1.75x...
+        totalPoints = Math.round(totalPoints * streakMultiplier);
+      }
+      setWinStreak(newStreak);
+      setBankScore(s => s + totalPoints);
+    } else if (res < 0) {
       w = "ai"; totalPoints = points + (rankDiff * 50);
-      setBankScore(s => s - totalPoints); 
-    } else { 
-      w = "tie"; totalPoints = 0; 
+      setWinStreak(0); // streak broken
+      setBankScore(s => s - totalPoints);
+    } else {
+      w = "tie"; totalPoints = 0;
+      // ties don't break streak
     }
-    
+
     // Observe hand result
     observeHandResult(opponentModelRef.current, round, pe.rank);
-    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff * 50 }]); setShowAiCards(true);
-    const bonusText = rankDiff > 0 ? ` (${points} base + ${rankDiff * 50} rank bonus)` : "";
+    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff * 50, streakMultiplier }]); setShowAiCards(true);
+    const streakText = streakMultiplier > 1 ? ` \u00d7${streakMultiplier.toFixed(2)} streak` : "";
+    const bonusText = (rankDiff > 0 || streakMultiplier > 1) ? ` (${points} base${rankDiff > 0 ? ` + ${rankDiff * 50} rank` : ""}${streakText})` : "";
     setMessage(w === "player" ? `Round won! Bank +${totalPoints}${bonusText}` : w === "ai" ? `Round lost! Bank −${totalPoints}${bonusText}` : "A tie! Bank unchanged.");
     setTimeout(() => {
       if (phase === PHASES.R1_PLAY) setPhase(PHASES.R1_REVEAL);
       else if (phase === PHASES.R2_PLAY) setPhase(PHASES.R2_REVEAL);
       else setPhase(PHASES.R3_REVEAL);
     }, 300);
-  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase]);
+  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase, winStreak, gamePhase]);
 
   const nextRound = useCallback(() => {
     if (phase === PHASES.R1_REVEAL) setPhase(PHASES.R2_COMMUNAL);
@@ -1271,7 +1291,7 @@ function CommunalPoker() {
           const potCards = [...communalCards, ...potDeck];
           const potSize = potCards.length;
           if (showInspector === "player") return <DeckInspector cards={pCards} title={`Your Deck (${pSize} cards)`} subtitle="Dealt and played cards shown dimmed" onClose={() => setShowInspector(null)} markedIds={playedIds} culledIds={[]} />;
-          if (showInspector === "ai") return <DeckInspector cards={aCards} title={`Opponent's Deck (${aSize} cards)`} subtitle={gamePhase === 2 ? "48 base + 4 bonus face cards" : "Standard 52-card deck"} onClose={() => setShowInspector(null)} markedIds={[]} culledIds={[]} />;
+          if (showInspector === "ai") return <DeckInspector cards={aCards} title={`Opponent's Deck (${aSize} cards)`} subtitle={gamePhase === 3 ? "40 base + 6 bonus face cards" : gamePhase === 2 ? "48 base + 4 bonus face cards" : "Standard 52-card deck"} onClose={() => setShowInspector(null)} markedIds={[]} culledIds={[]} />;
           if (showInspector === "pot") return <DeckInspector cards={potCards} title={`Pot Deck (${potSize} cards)`} subtitle="Cards dealt to the board shown dimmed" onClose={() => setShowInspector(null)} markedIds={communalCards.map(c => c.id)} culledIds={[]} />;
           return null;
         })()}
@@ -1462,48 +1482,43 @@ function CommunalPoker() {
               Three sessions. Nine rounds. Three full decks. Your Score Bank starts at zero. Every card counts. Stay positive after 3 sessions to win.
             </div>
 
-            {/* Phase Toggle */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 4 }}>
-              <span style={{
-                fontSize: 13, fontWeight: gamePhase === 1 ? 700 : 400,
-                color: gamePhase === 1 ? "#f1c40f" : "rgba(255,255,255,0.4)",
-                transition: "all 0.2s",
-              }}>Phase 1</span>
-              <div
-                onClick={() => setGamePhase(p => p === 1 ? 2 : 1)}
-                onTouchEnd={(e) => { e.preventDefault(); setGamePhase(p => p === 1 ? 2 : 1); }}
-                style={{
-                  width: 52, height: 28, borderRadius: 14, cursor: "pointer",
-                  background: gamePhase === 2 ? "rgba(231,76,60,0.4)" : "rgba(255,255,255,0.15)",
-                  border: gamePhase === 2 ? "1px solid rgba(231,76,60,0.6)" : "1px solid rgba(255,255,255,0.2)",
-                  position: "relative", transition: "all 0.25s ease",
-                  touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
-                }}
-              >
-                <div style={{
-                  width: 22, height: 22, borderRadius: "50%",
-                  background: gamePhase === 2 ? "#e74c3c" : "rgba(255,255,255,0.5)",
-                  position: "absolute", top: 2,
-                  left: gamePhase === 2 ? 27 : 3,
-                  transition: "all 0.25s ease",
-                  boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
-                }} />
+            {/* Phase Slider */}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, marginTop: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+                {[1, 2, 3].map(p => {
+                  const colors = { 1: "#f1c40f", 2: "#e74c3c", 3: "#9b59b6" };
+                  const active = gamePhase === p;
+                  return (
+                    <div key={p}
+                      onClick={() => setGamePhase(p)}
+                      onTouchEnd={(e) => { e.preventDefault(); setGamePhase(p); }}
+                      style={{
+                        width: 72, height: 34, display: "flex", alignItems: "center", justifyContent: "center",
+                        cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 400,
+                        color: active ? colors[p] : "rgba(255,255,255,0.4)",
+                        background: active ? `${colors[p]}22` : "rgba(255,255,255,0.05)",
+                        border: active ? `1px solid ${colors[p]}66` : "1px solid rgba(255,255,255,0.1)",
+                        borderRadius: p === 1 ? "8px 0 0 8px" : p === 3 ? "0 8px 8px 0" : "0",
+                        borderLeft: p > 1 ? "none" : undefined,
+                        transition: "all 0.2s ease",
+                        touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
+                      }}
+                    >Phase {p}</div>
+                  );
+                })}
               </div>
-              <span style={{
-                fontSize: 13, fontWeight: gamePhase === 2 ? 700 : 400,
-                color: gamePhase === 2 ? "#e74c3c" : "rgba(255,255,255,0.4)",
-                transition: "all 0.2s",
-              }}>Phase 2</span>
             </div>
 
             {/* Phase description */}
             <div style={{
               fontSize: 11, opacity: 0.5, maxWidth: 320, textAlign: "center", lineHeight: 1.5,
-              minHeight: 36, transition: "all 0.2s",
+              minHeight: 44, transition: "all 0.2s",
             }}>
               {gamePhase === 1
                 ? "Standard rules. Full 52-card decks."
-                : "All 2s removed. Ace connects to 3 in straights. Computer gets 4 extra face cards."}
+                : gamePhase === 2
+                ? "All 2s removed. Ace connects to 3 in straights. Computer gets 4 extra face cards."
+                : "All 2s and 3s removed. Ace connects to 4. Computer gets 6 extra face cards. Win streaks earn bonus points."}
             </div>
 
             <button onClick={startGame} style={btn("#27ae60", "#2ecc71")}>Deal Cards</button>
