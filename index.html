@@ -1182,6 +1182,7 @@ function CommunalPoker() {
   // Initialize three decks, deal hands, go straight to R1
   const initSession = useCallback((sessionNum, powerCards = [], resetBank = false, phaseMode) => {
     const gp = phaseMode !== undefined ? phaseMode : gamePhase;
+    console.log("[initSession] sessionNum:", sessionNum, "phaseMode:", phaseMode, "gp:", gp);
     currentGamePhase = gp;
     let pd = shuffle(createDeck("player"));
     let ad = shuffle(createDeck("ai"));
@@ -1252,6 +1253,7 @@ function CommunalPoker() {
   }, [gamePhase, shiftyAces]);
 
   const startGame = useCallback((overridePhase) => {
+    console.log("[startGame] called with overridePhase:", overridePhase, "gamePhase:", gamePhase);
     const gp = overridePhase || gamePhase;
     setWinStreak(0);
     setCoins(0);
@@ -1362,6 +1364,7 @@ function CommunalPoker() {
   }, []);
 
   const placeCommunal = useCallback(() => {
+    console.log("[placeCommunal] potDeck length:", potDeck.length, "phase:", phase);
     const nd = [...potDeck]; const card = nd.shift(); setPotDeck(nd);
     setCommunalCards(prev => [...prev, card]); setSelected(new Set()); setShowAiCards(false);
     setDoubleScoreActive(false); // reset activation each round
@@ -1374,8 +1377,11 @@ function CommunalPoker() {
     }, 800);
   }, [potDeck, phase]);
 
+  const placeCommunalRef = useRef(placeCommunal);
+  placeCommunalRef.current = placeCommunal;
   useEffect(() => {
-    if ([PHASES.R1_COMMUNAL, PHASES.R2_COMMUNAL, PHASES.R3_COMMUNAL].includes(phase)) placeCommunal();
+    console.log("[useEffect phase]", phase);
+    if ([PHASES.R1_COMMUNAL, PHASES.R2_COMMUNAL, PHASES.R3_COMMUNAL].includes(phase)) placeCommunalRef.current();
   }, [phase]);
 
   const confirmDiscard = useCallback(() => {
@@ -1812,7 +1818,7 @@ function CommunalPoker() {
                 : "All 2s and 3s removed. Aces high only. 7-card hands + discovery. Computer gets 6 extra face cards. Win streaks earn bonus points."}
             </div>
 
-            <button onClick={startGame} style={btn("#27ae60", "#2ecc71")}>Deal Cards</button>
+            <button onClick={() => startGame()} onTouchEnd={(e) => { e.preventDefault(); startGame(); }} style={btn("#27ae60", "#2ecc71")}>Deal Cards</button>
           </div>
         )}
 
@@ -2187,7 +2193,7 @@ function CommunalPoker() {
             {/* Buttons — always pinned at bottom */}
             <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "8px 0 6px", flexShrink: 0 }}>
               {isDiscard && (
-                <button onClick={confirmDiscard} style={btn("#27ae60", "#2ecc71")}>
+                <button onClick={() => confirmDiscard()} onTouchEnd={(e) => { e.preventDefault(); confirmDiscard(); }} style={btn("#27ae60", "#2ecc71")}>
                   {selected.size === 0 ? "Keep All" : `Discard ${selected.size}`}
                 </button>
               )}
@@ -2207,7 +2213,7 @@ function CommunalPoker() {
                       style={{...btn("#c0392b", "#e74c3c"), fontSize: 12, padding: "8px 12px", minHeight: 36, boxShadow: "0 0 12px rgba(231,76,60,0.5)"}}
                     >×2 ACTIVE — tap to cancel</button>
                   )}
-                  <button onClick={confirmPlay} disabled={selected.size !== roundInfo.cardsToPlay}
+                  <button onClick={() => confirmPlay()} onTouchEnd={(e) => { e.preventDefault(); confirmPlay(); }} disabled={selected.size !== roundInfo.cardsToPlay}
                     style={{
                       ...btn(selected.size === roundInfo.cardsToPlay ? "#2980b9" : "#555",
                              selected.size === roundInfo.cardsToPlay ? "#3498db" : "#666"),
@@ -2218,7 +2224,7 @@ function CommunalPoker() {
                 </div>
               )}
               {isReveal && (
-                <button onClick={nextRound} style={btn("#8e44ad", "#9b59b6")}>
+                <button onClick={() => nextRound()} onTouchEnd={(e) => { e.preventDefault(); nextRound(); }} style={btn("#8e44ad", "#9b59b6")}>
                   {phase === PHASES.R3_REVEAL ? (currentSession < 2 ? "Session Results →" : "See Final Results") : "Next Round →"}
                 </button>
               )}
@@ -2230,7 +2236,20 @@ function CommunalPoker() {
   );
 }
 
-ReactDOM.render(<CommunalPoker />, document.getElementById("root"));
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("React Error:", error, info); }
+  render() {
+    if (this.state.error) {
+      return React.createElement("div", { style: { color: "#fff", padding: 20, fontFamily: "monospace", whiteSpace: "pre-wrap" } },
+        "ERROR: " + this.state.error.message + "\n\n" + this.state.error.stack);
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.render(<ErrorBoundary><CommunalPoker /></ErrorBoundary>, document.getElementById("root"));
 
 // iPad/iOS touch optimizations
 document.addEventListener('touchmove', function(e) {
