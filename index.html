@@ -251,13 +251,14 @@ function evaluateHandWithSpecials(cards, discoveredHands, isAI) {
   if (!cards || cards.length < 3) return null;
   const hasSpecial = cards.some(c => c.isWild || c.isDualSuit);
 
-  // Choose evaluator based on hand size
+  // Choose evaluator based on hand size and phase
   function evalHand(hand) {
     if (hand.length === 3) return evaluate3CardHand(hand);
-    // 7-card hands always use full 7-card evaluation
-    if (hand.length === 7) {
+    // Phases 2/3: 7-card hands use full 7-card evaluation (special hands)
+    if (currentGamePhase >= 2 && hand.length === 7) {
       return evaluate7CardHand(hand, discoveredHands);
     }
+    // Phase 1: always best 5 of 7
     return evaluateBest5(hand);
   }
 
@@ -942,7 +943,7 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
             <div>Play <span style={{ color: "#f1c40f", fontWeight: 700 }}>{roundInfo.cardsToPlay}</span> cards</div>
             <div>+ <span style={{ color: "#e74c3c", fontWeight: 700 }}>{currentRound + 1}</span> communal</div>
             <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 4, paddingTop: 4 }}>
-              {roundInfo.cardsToPlay + currentRound + 1 === 7
+              {roundInfo.cardsToPlay + currentRound + 1 === 7 && gamePhase >= 2
                 ? <>All <span style={{ color: "#2ecc71", fontWeight: 700 }}>7</span> cards count</>
                 : roundInfo.cardsToPlay + currentRound + 1 > 5
                 ? <>Best <span style={{ color: "#2ecc71", fontWeight: 700 }}>5</span> from {roundInfo.cardsToPlay + currentRound + 1}</>
@@ -975,7 +976,7 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
       {/* Hand Rankings */}
       <div style={{ marginTop: "auto" }}>
         <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.4, marginBottom: 6 }}>
-          {currentRound === 0 ? "3-Card Rankings" : currentRound === 2 ? "7-Card Rankings" : "5-Card Rankings"}
+          {currentRound === 0 ? "3-Card Rankings" : currentRound === 2 && gamePhase >= 2 ? "7-Card Rankings" : "5-Card Rankings"}
         </div>
         {previewHandEval && (
           <div style={{
@@ -1018,21 +1019,15 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
             {name:"The Highrise",rank:7.5,id:"highrise"},
             {name:"Twin Trips",rank:6.5,id:"twinTrips"},
           ];
-          // Merge specials into ranking list
-          // Round 3 (7-card): show special hands. Phase 1 = always visible, Phase 2/3 = discovery system
+          // Merge specials into ranking list (Phases 2/3 only — Phase 1 uses standard best-5 ranks)
           let allHands = [...standardHands];
-          if (currentRound === 2) {
-            if (gamePhase >= 2 && discoveredHands) {
-              // Phases 2/3: discovery system — show discovered, mystery for undiscovered
-              for (const sh of specialHands) {
-                if (discoveredHands.has(sh.id)) allHands.push(sh);
-              }
-              const undiscovered = specialHands.filter(sh => !discoveredHands.has(sh.id));
-              if (undiscovered.length > 0) allHands.push({name:`??? (${undiscovered.length} hidden)`, rank: -1, isMystery: true});
-            } else {
-              // Phase 1: all special hands always visible
-              allHands.push(...specialHands);
+          if (currentRound === 2 && gamePhase >= 2 && discoveredHands) {
+            // Phases 2/3: discovery system — show discovered, mystery for undiscovered
+            for (const sh of specialHands) {
+              if (discoveredHands.has(sh.id)) allHands.push(sh);
             }
+            const undiscovered = specialHands.filter(sh => !discoveredHands.has(sh.id));
+            if (undiscovered.length > 0) allHands.push({name:`??? (${undiscovered.length} hidden)`, rank: -1, isMystery: true});
           }
           allHands.sort((a,b) => b.rank - a.rank);
           return (
