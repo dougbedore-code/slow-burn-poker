@@ -19,6 +19,10 @@
     padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
   button { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+  @keyframes mysteryPulse {
+    0%, 100% { opacity: 1; text-shadow: 0 0 4px rgba(180, 130, 255, 0.4); }
+    50% { opacity: 0.6; text-shadow: 0 0 12px rgba(180, 130, 255, 0.8); }
+  }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -61,8 +65,10 @@ function isFlush(cards) {
   return cards.every(c => c.suit === cards[0].suit);
 }
 
-// gamePhaseMode: 1 = standard (A-low = 1), 2 = no 2s (A-low = 2, connects to 3)
+// gamePhaseMode: 1 = standard (A-low = 1), 2 = no 2s (ace HIGH only unless shifty), 3 = no 2s/3s (ace HIGH only unless shifty)
 let currentGamePhase = 1;
+// Track whether current hand being evaluated contains a shifty ace
+let currentHandHasShiftyAce = false;
 
 function isStraight(values) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -70,7 +76,12 @@ function isStraight(values) {
     if (sorted[i] !== sorted[i-1] + 1) {
       // Check ace-low straight
       if (sorted.includes(14)) {
-        const aceLowVal = currentGamePhase === 3 ? 3 : currentGamePhase === 2 ? 2 : 1; // Phase 3: A connects to 4 (A=3), Phase 2: A connects to 3 (A=2)
+        // Phase 1: ace-low always allowed (A=1)
+        // Phase 2/3: ace-low ONLY if hand contains a shifty ace
+        if (currentGamePhase >= 2 && !currentHandHasShiftyAce) {
+          return { yes: false };
+        }
+        const aceLowVal = currentGamePhase === 1 ? 1 : 1; // Shifty ace always acts as 1 for low runs
         const aceLow = sorted.map(v => v === 14 ? aceLowVal : v).sort((a, b) => a - b);
         let ok = true;
         for (let j = 1; j < aceLow.length; j++) { if (aceLow[j] !== aceLow[j-1] + 1) { ok = false; break; } }
@@ -89,13 +100,18 @@ function getValueCounts(cards) {
 }
 
 function evaluate3CardHand(cards) {
+  currentHandHasShiftyAce = cards.some(c => c.isShiftyAce);
   const values = cards.map(c => c.value);
   const flush = isFlush(cards), straight = isStraight(values);
   const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
   const pairs = Object.entries(counts).filter(([,c]) => c === 2).map(([v]) => +v);
   const trips = Object.entries(counts).filter(([,c]) => c === 3).map(([v]) => +v);
-  if (straight.yes && flush) return { rank: 5, name: "Straight Flush", kickers: [straight.high] };
-  if (trips.length) return { rank: 4, name: "Three of a Kind", kickers: trips };
+  // New 3-card ranking: Three of a Kind (6) > Mini Royal (5) > Straight Flush (4) > Straight (3) > Flush (2) > Pair (1) > High Card (0)
+  if (trips.length) return { rank: 6, name: "Three of a Kind", kickers: trips };
+  // Mini Royal: Q-K-A suited
+  const isMiniRoyal = flush && sorted.includes(14) && sorted.includes(13) && sorted.includes(12);
+  if (isMiniRoyal) return { rank: 5, name: "Mini Royal", kickers: [14] };
+  if (straight.yes && flush) return { rank: 4, name: "Straight Flush", kickers: [straight.high] };
   if (straight.yes) return { rank: 3, name: "Straight", kickers: [straight.high] };
   if (flush) return { rank: 2, name: "Flush", kickers: sorted };
   if (pairs.length) return { rank: 1, name: "Pair", kickers: [...pairs, ...sorted.filter(v => v !== pairs[0])] };
@@ -103,6 +119,7 @@ function evaluate3CardHand(cards) {
 }
 
 function evaluate5CardHand(cards) {
+  currentHandHasShiftyAce = cards.some(c => c.isShiftyAce);
   const values = cards.map(c => c.value);
   const flush = isFlush(cards), straight = isStraight(values);
   const counts = getValueCounts(cards), sorted = [...values].sort((a, b) => b - a);
@@ -131,6 +148,52 @@ function evaluateBest5(cards) {
   let best = null;
   for (const c of combos) { const ev = evaluate5CardHand(c.map(i => cards[i])); if (!best || compareHands(ev, best) > 0) best = ev; }
   return best;
+}
+
+// ─── 7-Card Evaluation with Special Hands (Phases 2/3) ──────────────────────
+// Checks all 7 cards for special hands first, then falls back to best-5-of-7
+function evaluate7CardHand(cards, discoveredHands) {
+  currentHandHasShiftyAce = cards.some(c => c.isShiftyAce);
+  const counts = getValueCounts(cards);
+  const groups = Object.entries(counts).map(([v, c]) => ({ value: +v, count: c })).sort((a, b) => b.count - a.count || b.value - a.value);
+
+  // Check for The Monopoly (6 of a kind) — rank 12
+  const sixes = groups.filter(g => g.count >= 6);
+  if (sixes.length) {
+    const isDiscovered = discoveredHands && discoveredHands.has("monopoly");
+    return { rank: 12, name: "The Monopoly", kickers: [sixes[0].value], isSpecial: true, specialId: "monopoly", discovered: isDiscovered, hidden: !isDiscovered };
+  }
+
+  // Check for Full Fleet (5 of a kind + pair) — rank 11
+  const fives = groups.filter(g => g.count >= 5);
+  const remainAfterFive = fives.length ? groups.filter(g => g.value !== fives[0].value && g.count >= 2) : [];
+  if (fives.length && remainAfterFive.length) {
+    const isDiscovered = discoveredHands && discoveredHands.has("fullFleet");
+    return { rank: 11, name: "Full Fleet", kickers: [fives[0].value, remainAfterFive[0].value], isSpecial: true, specialId: "fullFleet", discovered: isDiscovered, hidden: !isDiscovered };
+  }
+
+  // Regular Five of a Kind (no pair alongside) stays at rank 10 via best-5
+
+  // Check for The Mansion (4 of a kind + 3 of a kind using all 7) — rank 7.5
+  const quads = groups.filter(g => g.count >= 4);
+  const trips = groups.filter(g => g.count >= 3);
+  if (quads.length) {
+    const remainTrips = groups.filter(g => g.value !== quads[0].value && g.count >= 3);
+    if (remainTrips.length) {
+      const isDiscovered = discoveredHands && discoveredHands.has("mansion");
+      return { rank: 7.5, name: "The Mansion", kickers: [quads[0].value, remainTrips[0].value], isSpecial: true, specialId: "mansion", discovered: isDiscovered, hidden: !isDiscovered };
+    }
+  }
+
+  // Check for Twin Trips (two separate 3-of-a-kinds) — rank 5.5
+  const allTrips = groups.filter(g => g.count >= 3);
+  if (allTrips.length >= 2) {
+    const isDiscovered = discoveredHands && discoveredHands.has("twinTrips");
+    return { rank: 5.5, name: "Twin Trips", kickers: [allTrips[0].value, allTrips[1].value], isSpecial: true, specialId: "twinTrips", discovered: isDiscovered, hidden: !isDiscovered };
+  }
+
+  // Fall back to best 5 of 7
+  return evaluateBest5(cards);
 }
 
 function compareHands(a, b) {
@@ -170,16 +233,30 @@ function expandSpecialCards(cards) {
 }
 
 // Evaluates a hand that may contain wild or dual-suit cards
-function evaluateHandWithSpecials(cards) {
+// discoveredHands: Set of specialIds already discovered by player (for 7-card eval)
+function evaluateHandWithSpecials(cards, discoveredHands, isAI) {
   if (!cards || cards.length < 3) return null;
   const hasSpecial = cards.some(c => c.isWild || c.isDualSuit);
+
+  // Choose evaluator: 7-card eval in phases 2/3 for hands with 7 cards
+  function evalHand(hand) {
+    if (hand.length === 3) return evaluate3CardHand(hand);
+    // In phases 2/3, use 7-card eval for 7-card hands to detect specials
+    if (currentGamePhase >= 2 && hand.length === 7) {
+      // AI can only find special hands that are already discovered
+      const aiDiscovered = isAI ? discoveredHands : discoveredHands;
+      return evaluate7CardHand(hand, aiDiscovered);
+    }
+    return evaluateBest5(hand);
+  }
+
   if (!hasSpecial) {
-    return cards.length === 3 ? evaluate3CardHand(cards) : evaluateBest5(cards);
+    return evalHand(cards);
   }
   const expansions = expandSpecialCards(cards);
   let best = null;
   for (const hand of expansions) {
-    const ev = hand.length === 3 ? evaluate3CardHand(hand) : evaluateBest5(hand);
+    const ev = evalHand(hand);
     if (!best || compareHands(ev, best) > 0) best = ev;
   }
   return best;
@@ -352,12 +429,11 @@ function aiDecideDiscard(hand, communalCards, maxDiscard, round, opponentModel) 
       if (uniqueVals[i] === uniqueVals[i-1] + 1) { run++; maxRun = Math.max(maxRun, run); }
       else if (uniqueVals[i] !== uniqueVals[i-1]) run = 1;
     }
-    // Ace-low straight draw: Phase 1 = A-2-3-4-5, Phase 2 = A-3-4-5-6 (A connects to 3)
-    const aceLowStart = currentGamePhase === 3 ? 4 : currentGamePhase === 2 ? 3 : 2;
-    if (uniqueVals.includes(14) && uniqueVals.includes(aceLowStart)) {
+    // Ace-low straight draw: only in Phase 1 (phases 2/3: aces high only for AI)
+    if (currentGamePhase === 1 && uniqueVals.includes(14) && uniqueVals.includes(2)) {
       let aceLowRun = 2;
       for (let step = 1; step <= 3; step++) {
-        if (uniqueVals.includes(aceLowStart + step)) aceLowRun++;
+        if (uniqueVals.includes(2 + step)) aceLowRun++;
       }
       maxRun = Math.max(maxRun, aceLowRun);
     }
@@ -633,8 +709,9 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
   if (!card) return null;
   const isWild = card.isWild;
   const isDual = card.isDualSuit;
-  const isPot = card.source === "pot"; // subtle indicator for pot-sourced cards
-  const color = isWild ? "#b8860b" : isDual ? "#7b2d8e" : SUIT_COLORS[card.suit];
+  const isShifty = card.isShiftyAce;
+  const isPot = card.source === "pot";
+  const color = isWild ? "#b8860b" : isDual ? "#7b2d8e" : isShifty ? "#9b59b6" : SUIT_COLORS[card.suit];
   const symbol = isWild ? "★" : isDual ? (SUIT_SYMBOLS.spades + SUIT_SYMBOLS.hearts) : SUIT_SYMBOLS[card.suit];
   const label = isWild ? "W" : VALUE_NAMES[card.value];
   const w = small ? 58 : 88;
@@ -647,7 +724,7 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
       style={{
         width: w, height: h, borderRadius: 8, flexShrink: 0,
         marginLeft: overlap ? (small ? -26 : -32) : 0,
-        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : isWild ? "2px solid #ffd54f" : isDual ? "2px solid #9c27b0" : "2px solid rgba(0,0,0,0.15)",
+        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : isWild ? "2px solid #ffd54f" : isDual ? "2px solid #9c27b0" : isShifty ? "2px solid rgba(155,89,182,0.5)" : "2px solid rgba(0,0,0,0.15)",
         background: faceDown
           ? "linear-gradient(135deg, #2c3e50 0%, #1a252f 50%, #2c3e50 100%)"
           : isWild
@@ -686,8 +763,9 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
             <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
             <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
           </div>
-          <div style={{ fontSize: small ? 24 : 36, textAlign: "center", color, lineHeight: 1, opacity: 0.35 }}>
+          <div style={{ fontSize: small ? 24 : 36, textAlign: "center", color, lineHeight: 1, opacity: 0.35, position: "relative" }}>
             {symbol}
+            {isShifty && <div style={{ position: "absolute", bottom: small ? -6 : -8, right: small ? -4 : -6, fontSize: small ? 8 : 10, color: "#9b59b6", fontWeight: 700, opacity: 0.8 }} title="Shifty Ace: can complete low-end runs">{"\u21C6"}</div>}
           </div>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)" }}>
             <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
@@ -700,7 +778,7 @@ function Card({ card, faceDown, selected, selectable, onClick, small, glowing, o
 }
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
-function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, collapsed, onToggle, previewHandRank, previewHandEval, aiDiscardCounts, currentSession, winStreak, gamePhase, coins }) {
+function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, collapsed, onToggle, previewHandRank, previewHandEval, aiDiscardCounts, currentSession, winStreak, gamePhase, coins, discoveredHands }) {
   const roundNames = ["I", "II", "III"];
   const roundPts = [100, 200, 300];
 
@@ -897,9 +975,8 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
         )}
         {currentRound === 0 ? (
           <div style={{ fontSize: 10, lineHeight: 1.7 }}>
-            {["Straight Flush","Three of a Kind","Straight","Flush","Pair","High Card"].map((h,i) => {
-              const rank = 5 - i; // 3-card ranks: SF=5, Three=4, Str=3, Flush=2, Pair=1, HC=0
-              const isActive = previewHandRank !== null && previewHandRank === rank;
+            {[{name:"Three of a Kind",rank:6},{name:"Mini Royal",rank:5},{name:"Straight Flush",rank:4},{name:"Straight",rank:3},{name:"Flush",rank:2},{name:"Pair",rank:1},{name:"High Card",rank:0}].map((h,i) => {
+              const isActive = previewHandRank !== null && previewHandRank === h.rank;
               return (
                 <div key={i} style={{
                   padding: "1px 4px", borderRadius: 3, transition: "all 0.2s",
@@ -908,30 +985,58 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
                   opacity: isActive ? 1 : 0.5,
                   fontWeight: isActive ? 700 : 400,
                 }}>
-                  <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>{h}{isActive && " ◄"}
+                  <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>{h.name}{isActive && " ◄"}
                 </div>
               );
             })}
           </div>
-        ) : (
-          <div style={{ fontSize: 10, lineHeight: 1.6 }}>
-            {["Five of a Kind","Royal Flush","Str. Flush","Four Kind","Full House","Flush","Straight","Three Kind","Two Pair","One Pair","High Card"].map((h,i) => {
-              const rank = 10 - i; // 5-card ranks: 5K=10, RF=9, SF=8, Four=7, FH=6, Fl=5, St=4, Three=3, 2P=2, 1P=1, HC=0
-              const isActive = previewHandRank !== null && previewHandRank === rank;
-              return (
-                <div key={i} style={{
-                  padding: "1px 4px", borderRadius: 3, transition: "all 0.2s",
-                  background: isActive ? "rgba(241,196,15,0.15)" : "transparent",
-                  color: isActive ? "#f1c40f" : "inherit",
-                  opacity: isActive ? 1 : 0.5,
-                  fontWeight: isActive ? 700 : 400,
-                }}>
-                  <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>{h}{isActive && " ◄"}
-                </div>
-              );
-            })}
-          </div>
-        )}
+        ) : (() => {
+          // Build ranking list — standard hands always visible, special hands only when discovered
+          const standardHands = [
+            {name:"Five of a Kind",rank:10},{name:"Royal Flush",rank:9},{name:"Str. Flush",rank:8},
+            {name:"Four Kind",rank:7},{name:"Full House",rank:6},{name:"Flush",rank:5},
+            {name:"Straight",rank:4},{name:"Three Kind",rank:3},{name:"Two Pair",rank:2},
+            {name:"One Pair",rank:1},{name:"High Card",rank:0}
+          ];
+          const specialHands = [
+            {name:"The Monopoly",rank:12,id:"monopoly"},
+            {name:"Full Fleet",rank:11,id:"fullFleet"},
+            {name:"The Mansion",rank:7.5,id:"mansion"},
+            {name:"Twin Trips",rank:5.5,id:"twinTrips"},
+          ];
+          // Merge discovered specials into ranking list
+          let allHands = [...standardHands];
+          if (gamePhase >= 2 && discoveredHands) {
+            for (const sh of specialHands) {
+              if (discoveredHands.has(sh.id)) allHands.push(sh);
+            }
+            // Add mystery slots for undiscovered specials
+            const undiscovered = specialHands.filter(sh => !discoveredHands.has(sh.id));
+            if (undiscovered.length > 0) allHands.push({name:`??? (${undiscovered.length} hidden)`, rank: -1, isMystery: true});
+          }
+          allHands.sort((a,b) => b.rank - a.rank);
+          return (
+            <div style={{ fontSize: 10, lineHeight: 1.6 }}>
+              {allHands.map((h,i) => {
+                const isActive = previewHandRank !== null && previewHandRank === h.rank;
+                const isMystery = h.isMystery;
+                return (
+                  <div key={h.name} style={{
+                    padding: "1px 4px", borderRadius: 3, transition: "all 0.2s",
+                    background: isActive ? "rgba(241,196,15,0.15)" : isMystery ? "rgba(155,89,182,0.08)" : "transparent",
+                    color: isActive ? "#f1c40f" : isMystery ? "#9b59b6" : "inherit",
+                    opacity: isActive ? 1 : isMystery ? 0.6 : 0.5,
+                    fontWeight: isActive ? 700 : 400,
+                    fontStyle: isMystery ? "italic" : "normal",
+                  }}>
+                    {!isMystery && <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>}
+                    {h.name}{isActive && " ◄"}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1057,6 +1162,10 @@ function CommunalPoker() {
   const [hasDoubleScore, setHasDoubleScore] = useState(false); // bought but not yet used
   const [doubleScoreActive, setDoubleScoreActive] = useState(false); // activated for current round
   const [swapCardOffers, setSwapCardOffers] = useState([]); // generated each store visit
+  const [discoveredHands, setDiscoveredHands] = useState(new Set()); // special hand IDs discovered by player
+  const [showPhaseTransition, setShowPhaseTransition] = useState(null); // null or {from, to} for phase linking
+  const [shiftyAces, setShiftyAces] = useState([]); // [{suit, value:14}] aces upgraded to shifty
+  const [shiftyAceOffer, setShiftyAceOffer] = useState(null); // {suit} offered this store visit
   const deckModsRef = useRef([]); // permanent card upgrades: [{removeValue, removeSuit, addValue, addSuit}]
   const opponentModelRef = useRef(createOpponentModel());
 
@@ -1100,6 +1209,11 @@ function CommunalPoker() {
         pd.push({ suit: mod.addSuit, value: mod.addValue, id: `upgrade-${mod.addValue}-${mod.addSuit}-from${mod.removeValue}${mod.removeSuit}` });
       }
     }
+    // Mark shifty aces in player deck
+    for (const sa of shiftyAces) {
+      const idx = pd.findIndex(c => c.value === 14 && c.suit === sa.suit && !c.isShiftyAce);
+      if (idx >= 0) pd[idx] = { ...pd[idx], isShiftyAce: true };
+    }
     pd = shuffle(pd);
 
     // Deal 10 cards to each player
@@ -1125,15 +1239,20 @@ function CommunalPoker() {
     setShowInspector(null);
     setPendingPowerCards([]);
     setPhase(PHASES.R1_COMMUNAL); setMessage("");
-  }, [gamePhase]);
+  }, [gamePhase, shiftyAces]);
 
-  const startGame = useCallback(() => {
-    setWinStreak(0); // reset streak on new game
-    setCoins(0); // reset coins on new game
+  const startGame = useCallback((overridePhase) => {
+    const gp = overridePhase || gamePhase;
+    setWinStreak(0);
+    setCoins(0);
     setHasDoubleScore(false);
     setDoubleScoreActive(false);
-    deckModsRef.current = []; // reset card upgrades
-    initSession(0, [], true, gamePhase);
+    setDiscoveredHands(new Set());
+    setShiftyAces([]);
+    setShowPhaseTransition(null);
+    deckModsRef.current = [];
+    if (overridePhase) setGamePhase(overridePhase);
+    initSession(0, [], true, gp);
   }, [initSession, gamePhase]);
 
   // Start next session — goes through pot reveal + culling again
@@ -1176,8 +1295,21 @@ function CommunalPoker() {
         toValue: faceValues[Math.floor(Math.random() * 4)],
         toSuit: SUITS[Math.floor(Math.random() * 4)],
       })));
+      // Generate shifty ace offer (phases 2/3 only)
+      if (gamePhase >= 2) {
+        const upgradedSuits = shiftyAces.map(sa => sa.suit);
+        const availableAces = SUITS.filter(s => !upgradedSuits.includes(s));
+        if (availableAces.length > 0) {
+          const randomSuit = availableAces[Math.floor(Math.random() * availableAces.length)];
+          setShiftyAceOffer({ suit: randomSuit });
+        } else {
+          setShiftyAceOffer(null);
+        }
+      } else {
+        setShiftyAceOffer(null);
+      }
     }
-  }, [phase]);
+  }, [phase, gamePhase, shiftyAces]);
 
   const proceedFromStore = useCallback(() => {
     const cards = [];
@@ -1186,12 +1318,14 @@ function CommunalPoker() {
       cards.push({ suit: "wild", value: 15, id: `power-wild-s${currentSession + 2}`, isWild: true });
       cost += 100;
     }
-    if (storeCart.has("dual-king")) {
-      cards.push({ suit: "dual", value: 13, id: `power-dualking-s${currentSession + 2}`, isDualSuit: true, suits: ["spades", "hearts"] });
-      cost += 100;
-    }
+    // Dual King removed from game
     if (storeCart.has("double-score")) {
       setHasDoubleScore(true);
+      cost += 25;
+    }
+    // Shifty Ace upgrade
+    if (storeCart.has("shifty-ace") && shiftyAceOffer) {
+      setShiftyAces(prev => [...prev, { suit: shiftyAceOffer.suit, value: 14 }]);
       cost += 25;
     }
     // Card upgrades — permanently modify player's deck
@@ -1207,7 +1341,7 @@ function CommunalPoker() {
     if (cost > 0) setCoins(c => c - cost);
     setStoreCart(new Set());
     startNextSession(currentSession + 1, cards);
-  }, [storeCart, currentSession, startNextSession, swapCardOffers]);
+  }, [storeCart, currentSession, startNextSession, swapCardOffers, shiftyAceOffer]);
 
   const roundInfo = useMemo(() => {
     const p = phase;
@@ -1279,8 +1413,20 @@ function CommunalPoker() {
     
     setPlayerHand(nph); setAiHand(nah); setPlayerPlayed(npp); setAiPlayed(nap); setSelected(new Set());
     const pfh = [...pp, ...communalCards], afh = [...ap, ...communalCards];
-    const pe = evaluateHandWithSpecials(pfh);
-    const ae = evaluateHandWithSpecials(afh);
+    const pe = evaluateHandWithSpecials(pfh, discoveredHands, false);
+    const ae = evaluateHandWithSpecials(afh, discoveredHands, true);
+    // Discovery system: if player made a special hand, discover it
+    if (pe.isSpecial && pe.hidden) {
+      setDiscoveredHands(prev => new Set([...prev, pe.specialId]));
+      pe.discovered = true;
+      pe.hidden = false;
+    }
+    // AI can only use specials already discovered — if AI found one that's hidden, downgrade
+    if (ae.isSpecial && ae.hidden) {
+      // AI hasn't discovered this — fall back to best-5-of-7
+      const aeFallback = evaluateBest5(afh);
+      Object.assign(ae, aeFallback);
+    }
     const res = compareHands(pe, ae);
     const rankDiff = Math.abs(pe.rank - ae.rank);
     let w, totalPoints, streakMultiplier = 1;
@@ -1371,10 +1517,10 @@ function CommunalPoker() {
     const previewCards = [...selectedCards, ...communalCards];
     if (previewCards.length < 3) return null;
     try {
-      const ev = evaluateHandWithSpecials(previewCards);
+      const ev = evaluateHandWithSpecials(previewCards, discoveredHands, false);
       return ev ? ev.rank : null;
     } catch(e) { return null; }
-  }, [isPlay, selected, playerHand, communalCards]);
+  }, [isPlay, selected, playerHand, communalCards, discoveredHands]);
 
   // Also compute the full preview eval name for display
   const previewHandEval = useMemo(() => {
@@ -1383,9 +1529,14 @@ function CommunalPoker() {
     const previewCards = [...selectedCards, ...communalCards];
     if (selectedCards.length !== roundInfo.cardsToPlay) return null;
     try {
-      return evaluateHandWithSpecials(previewCards);
+      const ev = evaluateHandWithSpecials(previewCards, discoveredHands, false);
+      // Show mystery cue for undiscovered special hands
+      if (ev && ev.isSpecial && ev.hidden) {
+        return { ...ev, name: "??? Something special ???", isMystery: true };
+      }
+      return ev;
     } catch(e) { return null; }
-  }, [isPlay, selected, playerHand, communalCards, roundInfo.cardsToPlay]);
+  }, [isPlay, selected, playerHand, communalCards, roundInfo.cardsToPlay, discoveredHands]);
 
   const btn = (bg, border) => ({
     padding: "12px 28px", borderRadius: 8, border: `1px solid ${border || "rgba(255,255,255,0.15)"}`,
@@ -1405,7 +1556,7 @@ function CommunalPoker() {
 
   return (
     <div style={{ width: "100%", height: "100dvh", display: "flex", background: "#0a2912", fontFamily: "'Segoe UI', 'Helvetica Neue', sans-serif", overflow: "hidden", touchAction: "none", overscrollBehavior: "none" }}>
-      <SidePanel {...{ phase, currentRound, roundInfo, bankScore, roundResults, previewHandRank, previewHandEval, aiDiscardCounts, currentSession, winStreak, gamePhase, coins }} collapsed={!sidebarOpen} onToggle={() => setSidebarOpen(s => !s)} />
+      <SidePanel {...{ phase, currentRound, roundInfo, bankScore, roundResults, previewHandRank, previewHandEval, aiDiscardCounts, currentSession, winStreak, gamePhase, coins, discoveredHands }} collapsed={!sidebarOpen} onToggle={() => setSidebarOpen(s => !s)} />
 
       <div style={{
         flex: 1, display: "flex", flexDirection: "column", position: "relative", padding: "8px 16px",
@@ -1579,8 +1730,8 @@ function CommunalPoker() {
                   Coins are separate from your Score Bank and carry across sessions.
                   Between sessions, visit The Store to spend coins.
                   <span style={{ color: "#ffd54f", fontWeight: 600 }}> Wild Card</span> (100 coins) becomes any card.
-                  <span style={{ color: "#ce93d8", fontWeight: 600 }}> Dual King</span> (100 coins) is a King that counts as Spades or Hearts.
                   <span style={{ color: "#f39c12", fontWeight: 600 }}> Double Score</span> (25 coins) can be activated any round to 2× the score — win or lose!
+                  <span style={{ color: "#9b59b6", fontWeight: 600 }}> Shifty Ace</span> (25 coins, Phase 2/3 only) upgrades a random ace in your deck to also complete low-end runs.
                   <span style={{ color: "#3498db", fontWeight: 600 }}> Card Upgrades</span> (25 coins) let you sacrifice a low card (4, 5, or 6) and receive a random face card in your next hand.
                 </p>
 
@@ -1649,10 +1800,10 @@ function CommunalPoker() {
               minHeight: 44, transition: "all 0.2s",
             }}>
               {gamePhase === 1
-                ? "Standard rules. Full 52-card decks."
+                ? "Standard rules. Full 52-card decks. Aces go high or low."
                 : gamePhase === 2
-                ? "All 2s removed. Ace connects to 3 in straights. Computer gets 4 extra face cards."
-                : "All 2s and 3s removed. Ace connects to 4. Computer gets 6 extra face cards. Win streaks earn bonus points."}
+                ? "All 2s removed. Aces high only. 7-card hands with hidden specials. Computer gets 4 extra face cards."
+                : "All 2s and 3s removed. Aces high only. 7-card hands + discovery. Computer gets 6 extra face cards. Win streaks earn bonus points."}
             </div>
 
             <button onClick={startGame} style={btn("#27ae60", "#2ecc71")}>Deal Cards</button>
@@ -1660,7 +1811,7 @@ function CommunalPoker() {
         )}
 
         {/* Game Over */}
-        {phase === PHASES.GAME_OVER && (
+        {phase === PHASES.GAME_OVER && !showPhaseTransition && (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, zIndex: 1 }}>
             <div style={{
               fontSize: 36, fontWeight: 700, fontFamily: "'Georgia', serif",
@@ -1681,7 +1832,54 @@ function CommunalPoker() {
             <div style={{ fontSize: 11, opacity: 0.3, marginTop: 4 }}>
               Played on Phase {gamePhase}
             </div>
-            <button onClick={() => setPhase(PHASES.START)} onTouchEnd={(e) => { e.preventDefault(); setPhase(PHASES.START); }} style={btn("#e67e22", "#f39c12")}>Play Again</button>
+            {/* Phase linking: victory on phase 1 or 2 advances to next phase */}
+            {bankScore > 0 && gamePhase < 3 ? (
+              <button onClick={() => setShowPhaseTransition({ from: gamePhase, to: gamePhase + 1 })} onTouchEnd={(e) => { e.preventDefault(); setShowPhaseTransition({ from: gamePhase, to: gamePhase + 1 }); }} style={btn("#9b59b6", "#bb8fce")}>
+                Advance to Phase {gamePhase + 1} →
+              </button>
+            ) : (
+              <button onClick={() => setPhase(PHASES.START)} onTouchEnd={(e) => { e.preventDefault(); setPhase(PHASES.START); }} style={btn("#e67e22", "#f39c12")}>Play Again</button>
+            )}
+          </div>
+        )}
+
+        {/* Phase Transition Screen */}
+        {showPhaseTransition && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, zIndex: 1, padding: "0 20px" }}>
+            <div style={{ fontSize: 12, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5 }}>
+              Phase {showPhaseTransition.from} → Phase {showPhaseTransition.to}
+            </div>
+            <div style={{
+              fontSize: 30, fontWeight: 700, fontFamily: "'Georgia', serif",
+              background: "linear-gradient(180deg, #bb8fce 0%, #9b59b6 100%)",
+              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+            }}>PHASE {showPhaseTransition.to}</div>
+            <div style={{
+              background: "rgba(0,0,0,0.2)", borderRadius: 12, padding: "16px 20px",
+              border: "1px solid rgba(155,89,182,0.3)", maxWidth: 400, lineHeight: 1.7, fontSize: 13,
+            }}>
+              <div style={{ fontWeight: 700, color: "#bb8fce", marginBottom: 8 }}>What changes:</div>
+              {showPhaseTransition.to === 2 && (<>
+                <div style={{ marginBottom: 4 }}>• All <span style={{ color: "#e74c3c", fontWeight: 600 }}>2s removed</span> from every deck (48-card decks)</div>
+                <div style={{ marginBottom: 4 }}>• Aces are <span style={{ color: "#f1c40f", fontWeight: 600 }}>high only</span> — no low-end straights (A-2-3 is no longer valid)</div>
+                <div style={{ marginBottom: 4 }}>• Computer receives <span style={{ color: "#e74c3c", fontWeight: 600 }}>4 extra face cards</span></div>
+                <div style={{ marginBottom: 4 }}>• <span style={{ color: "#9b59b6", fontWeight: 600 }}>7-card evaluation</span> in Rounds 2 & 3 — hidden special hands can be discovered!</div>
+                <div style={{ marginBottom: 4 }}>• <span style={{ color: "#9b59b6", fontWeight: 600 }}>Shifty Ace</span> available in store — upgrade an ace to allow low-end runs again</div>
+              </>)}
+              {showPhaseTransition.to === 3 && (<>
+                <div style={{ marginBottom: 4 }}>• All <span style={{ color: "#e74c3c", fontWeight: 600 }}>2s and 3s removed</span> from every deck (44-card decks)</div>
+                <div style={{ marginBottom: 4 }}>• Aces remain <span style={{ color: "#f1c40f", fontWeight: 600 }}>high only</span> unless upgraded with Shifty Ace</div>
+                <div style={{ marginBottom: 4 }}>• Computer receives <span style={{ color: "#e74c3c", fontWeight: 600 }}>6 extra face cards</span></div>
+                <div style={{ marginBottom: 4 }}>• <span style={{ color: "#f1c40f", fontWeight: 600 }}>Win streak bonus</span>: consecutive round wins earn escalating score multipliers</div>
+                <div style={{ marginBottom: 4 }}>• 7-card evaluation + discovery system continues</div>
+              </>)}
+              <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", marginTop: 8, paddingTop: 8, fontSize: 11, opacity: 0.5 }}>
+                All decks reset. No upgrades or powers carry over. Score Bank resets to zero.
+              </div>
+            </div>
+            <button onClick={() => startGame(showPhaseTransition.to)} onTouchEnd={(e) => { e.preventDefault(); startGame(showPhaseTransition.to); }} style={btn("#9b59b6", "#bb8fce")}>
+              Begin Phase {showPhaseTransition.to}
+            </button>
           </div>
         )}
 
@@ -1722,7 +1920,7 @@ function CommunalPoker() {
         {phase === PHASES.STORE && (() => {
           const suitSymbols = { spades: "\u2660", hearts: "\u2665", diamonds: "\u2666", clubs: "\u2663" };
           const suitColors = { spades: "#e0e0e0", hearts: "#e74c3c", diamonds: "#3498db", clubs: "#2ecc71" };
-          let cartCost = (storeCart.has("wild") ? 100 : 0) + (storeCart.has("dual-king") ? 100 : 0) + (storeCart.has("double-score") ? 25 : 0);
+          let cartCost = (storeCart.has("wild") ? 100 : 0) + (storeCart.has("double-score") ? 25 : 0) + (storeCart.has("shifty-ace") ? 25 : 0);
           swapCardOffers.forEach((_, i) => { if (storeCart.has(`swap-${i}`)) cartCost += 25; });
           const afterPurchase = coins - cartCost;
           const storeItemStyle = (sel, color) => ({
@@ -1755,13 +1953,7 @@ function CommunalPoker() {
                   <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>100 {"\uD83E\uDE99"}</div>
                   {storeCart.has("wild") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
                 </div>
-                <div onClick={() => toggleStoreItem("dual-king")} onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("dual-king"); }} style={storeItemStyle(storeCart.has("dual-king"), "#9c27b0")}>
-                  <div style={{ fontSize: 24, color: "#9c27b0" }}>♠♥</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#ce93d8", marginTop: 4 }}>Dual King</div>
-                  <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, lineHeight: 1.4 }}>King: Spades or Hearts</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>100 {"\uD83E\uDE99"}</div>
-                  {storeCart.has("dual-king") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
-                </div>
+                {/* Dual King removed from game */}
               </div>
 
               {/* Powers (25 coins) */}
@@ -1779,6 +1971,29 @@ function CommunalPoker() {
                   {hasDoubleScore && <div style={{ fontSize: 10, color: "#f39c12", marginTop: 3, fontWeight: 600 }}>Already owned</div>}
                   {storeCart.has("double-score") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
                 </div>
+                {/* Shifty Ace (phases 2/3 only) */}
+                {gamePhase >= 2 && shiftyAceOffer && (
+                  <div
+                    onClick={() => toggleStoreItem("shifty-ace")}
+                    onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("shifty-ace"); }}
+                    style={storeItemStyle(storeCart.has("shifty-ace"), "#9b59b6")}
+                  >
+                    <div style={{ fontSize: 24, color: "#9b59b6" }}>A{"\u21C6"}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#bb8fce", marginTop: 4 }}>Shifty Ace</div>
+                    <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, lineHeight: 1.4 }}>
+                      Upgrade A{SUIT_SYMBOLS[shiftyAceOffer.suit]} to complete low-end runs
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>25 {"\uD83E\uDE99"}</div>
+                    {storeCart.has("shifty-ace") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
+                  </div>
+                )}
+                {gamePhase >= 2 && !shiftyAceOffer && shiftyAces.length > 0 && (
+                  <div style={{...storeItemStyle(false, "#9b59b6"), opacity: 0.35, cursor: "default"}}>
+                    <div style={{ fontSize: 24, color: "#9b59b6" }}>A{"\u21C6"}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#bb8fce", marginTop: 4 }}>Shifty Ace</div>
+                    <div style={{ fontSize: 10, opacity: 0.5, marginTop: 3 }}>All aces upgraded</div>
+                  </div>
+                )}
               </div>
 
               {/* Swap Cards (25 coins) */}
@@ -1933,8 +2148,12 @@ function CommunalPoker() {
               <div style={{ display: "flex", justifyContent: "center", padding: "2px 0", flexShrink: 0 }}>
                 <div style={{
                   padding: "3px 14px", borderRadius: 12,
-                  background: "rgba(241,196,15,0.12)", border: "1px solid rgba(241,196,15,0.25)",
-                  fontSize: 12, fontWeight: 700, color: "#f1c40f", letterSpacing: 0.5,
+                  background: previewHandEval.isMystery ? "rgba(155,89,182,0.2)" : "rgba(241,196,15,0.12)",
+                  border: previewHandEval.isMystery ? "1px solid rgba(155,89,182,0.5)" : "1px solid rgba(241,196,15,0.25)",
+                  fontSize: 12, fontWeight: 700,
+                  color: previewHandEval.isMystery ? "#bb8fce" : "#f1c40f",
+                  letterSpacing: 0.5,
+                  animation: previewHandEval.isMystery ? "mysteryPulse 1.5s ease-in-out infinite" : "none",
                 }}>
                   {previewHandEval.name}
                 </div>
