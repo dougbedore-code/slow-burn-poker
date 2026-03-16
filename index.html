@@ -178,22 +178,31 @@ function evaluate7CardHand(cards, discoveredHands) {
 
   // Regular Five of a Kind (no pair alongside) stays at rank 10 via best-5
 
-  // Check for The Mansion (4 of a kind + 3 of a kind using all 7) — rank 7.5
+  // Check for The Mansion (4 of a kind + 3 of a kind using all 7) — rank 9.5 (above Royal Flush)
   const quads = groups.filter(g => g.count >= 4);
   const trips = groups.filter(g => g.count >= 3);
   if (quads.length) {
     const remainTrips = groups.filter(g => g.value !== quads[0].value && g.count >= 3);
     if (remainTrips.length) {
       const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("mansion"));
-      return { rank: 7.5, name: "The Mansion", kickers: [quads[0].value, remainTrips[0].value], isSpecial: true, specialId: "mansion", discovered: isDiscovered, hidden: !isDiscovered };
+      return { rank: 9.5, name: "The Mansion", kickers: [quads[0].value, remainTrips[0].value], isSpecial: true, specialId: "mansion", discovered: isDiscovered, hidden: !isDiscovered };
     }
   }
 
-  // Check for Twin Trips (two separate 3-of-a-kinds) — rank 5.5
+  // Check for The Highrise (4 of a kind + a pair) — rank 7.5 (above Four of a Kind)
+  if (quads.length) {
+    const remainPairs = groups.filter(g => g.value !== quads[0].value && g.count >= 2);
+    if (remainPairs.length) {
+      const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("highrise"));
+      return { rank: 7.5, name: "The Highrise", kickers: [quads[0].value, remainPairs[0].value], isSpecial: true, specialId: "highrise", discovered: isDiscovered, hidden: !isDiscovered };
+    }
+  }
+
+  // Check for Twin Trips (two separate 3-of-a-kinds) — rank 6.5 (above Full House)
   const allTrips = groups.filter(g => g.count >= 3);
   if (allTrips.length >= 2) {
     const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("twinTrips"));
-    return { rank: 5.5, name: "Twin Trips", kickers: [allTrips[0].value, allTrips[1].value], isSpecial: true, specialId: "twinTrips", discovered: isDiscovered, hidden: !isDiscovered };
+    return { rank: 6.5, name: "Twin Trips", kickers: [allTrips[0].value, allTrips[1].value], isSpecial: true, specialId: "twinTrips", discovered: isDiscovered, hidden: !isDiscovered };
   }
 
   // Fall back to best 5 of 7
@@ -1005,8 +1014,9 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
           const specialHands = [
             {name:"The Monopoly",rank:12,id:"monopoly"},
             {name:"Full Fleet",rank:11,id:"fullFleet"},
-            {name:"The Mansion",rank:7.5,id:"mansion"},
-            {name:"Twin Trips",rank:5.5,id:"twinTrips"},
+            {name:"The Mansion",rank:9.5,id:"mansion"},
+            {name:"The Highrise",rank:7.5,id:"highrise"},
+            {name:"Twin Trips",rank:6.5,id:"twinTrips"},
           ];
           // Merge specials into ranking list
           // Round 3 (7-card): show special hands. Phase 1 = always visible, Phase 2/3 = discovery system
