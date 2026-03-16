@@ -157,10 +157,14 @@ function evaluate7CardHand(cards, discoveredHands) {
   const counts = getValueCounts(cards);
   const groups = Object.entries(counts).map(([v, c]) => ({ value: +v, count: c })).sort((a, b) => b.count - a.count || b.value - a.value);
 
+  // In Phase 1, specials are always visible (no discovery system)
+  // In Phases 2/3, specials use the discovery/hidden system
+  const useDiscovery = currentGamePhase >= 2;
+
   // Check for The Monopoly (6 of a kind) — rank 12
   const sixes = groups.filter(g => g.count >= 6);
   if (sixes.length) {
-    const isDiscovered = discoveredHands && discoveredHands.has("monopoly");
+    const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("monopoly"));
     return { rank: 12, name: "The Monopoly", kickers: [sixes[0].value], isSpecial: true, specialId: "monopoly", discovered: isDiscovered, hidden: !isDiscovered };
   }
 
@@ -168,7 +172,7 @@ function evaluate7CardHand(cards, discoveredHands) {
   const fives = groups.filter(g => g.count >= 5);
   const remainAfterFive = fives.length ? groups.filter(g => g.value !== fives[0].value && g.count >= 2) : [];
   if (fives.length && remainAfterFive.length) {
-    const isDiscovered = discoveredHands && discoveredHands.has("fullFleet");
+    const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("fullFleet"));
     return { rank: 11, name: "Full Fleet", kickers: [fives[0].value, remainAfterFive[0].value], isSpecial: true, specialId: "fullFleet", discovered: isDiscovered, hidden: !isDiscovered };
   }
 
@@ -180,7 +184,7 @@ function evaluate7CardHand(cards, discoveredHands) {
   if (quads.length) {
     const remainTrips = groups.filter(g => g.value !== quads[0].value && g.count >= 3);
     if (remainTrips.length) {
-      const isDiscovered = discoveredHands && discoveredHands.has("mansion");
+      const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("mansion"));
       return { rank: 7.5, name: "The Mansion", kickers: [quads[0].value, remainTrips[0].value], isSpecial: true, specialId: "mansion", discovered: isDiscovered, hidden: !isDiscovered };
     }
   }
@@ -188,7 +192,7 @@ function evaluate7CardHand(cards, discoveredHands) {
   // Check for Twin Trips (two separate 3-of-a-kinds) — rank 5.5
   const allTrips = groups.filter(g => g.count >= 3);
   if (allTrips.length >= 2) {
-    const isDiscovered = discoveredHands && discoveredHands.has("twinTrips");
+    const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("twinTrips"));
     return { rank: 5.5, name: "Twin Trips", kickers: [allTrips[0].value, allTrips[1].value], isSpecial: true, specialId: "twinTrips", discovered: isDiscovered, hidden: !isDiscovered };
   }
 
@@ -238,14 +242,12 @@ function evaluateHandWithSpecials(cards, discoveredHands, isAI) {
   if (!cards || cards.length < 3) return null;
   const hasSpecial = cards.some(c => c.isWild || c.isDualSuit);
 
-  // Choose evaluator: 7-card eval in phases 2/3 for hands with 7 cards
+  // Choose evaluator based on hand size
   function evalHand(hand) {
     if (hand.length === 3) return evaluate3CardHand(hand);
-    // In phases 2/3, use 7-card eval for 7-card hands to detect specials
-    if (currentGamePhase >= 2 && hand.length === 7) {
-      // AI can only find special hands that are already discovered
-      const aiDiscovered = isAI ? discoveredHands : discoveredHands;
-      return evaluate7CardHand(hand, aiDiscovered);
+    // 7-card hands always use full 7-card evaluation
+    if (hand.length === 7) {
+      return evaluate7CardHand(hand, discoveredHands);
     }
     return evaluateBest5(hand);
   }
@@ -931,7 +933,9 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
             <div>Play <span style={{ color: "#f1c40f", fontWeight: 700 }}>{roundInfo.cardsToPlay}</span> cards</div>
             <div>+ <span style={{ color: "#e74c3c", fontWeight: 700 }}>{currentRound + 1}</span> communal</div>
             <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 4, paddingTop: 4 }}>
-              {roundInfo.cardsToPlay + currentRound + 1 > 5
+              {roundInfo.cardsToPlay + currentRound + 1 === 7
+                ? <>All <span style={{ color: "#2ecc71", fontWeight: 700 }}>7</span> cards count</>
+                : roundInfo.cardsToPlay + currentRound + 1 > 5
                 ? <>Best <span style={{ color: "#2ecc71", fontWeight: 700 }}>5</span> from {roundInfo.cardsToPlay + currentRound + 1}</>
                 : <><span style={{ color: "#2ecc71", fontWeight: 700 }}>{roundInfo.cardsToPlay + currentRound + 1}</span>-card hand</>}
             </div>
@@ -962,7 +966,7 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
       {/* Hand Rankings */}
       <div style={{ marginTop: "auto" }}>
         <div style={{ fontSize: 9, letterSpacing: 2, textTransform: "uppercase", opacity: 0.4, marginBottom: 6 }}>
-          {currentRound === 0 ? "3-Card Rankings" : "5-Card Rankings"}
+          {currentRound === 0 ? "3-Card Rankings" : currentRound === 2 ? "7-Card Rankings" : "5-Card Rankings"}
         </div>
         {previewHandEval && (
           <div style={{
@@ -1004,15 +1008,21 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
             {name:"The Mansion",rank:7.5,id:"mansion"},
             {name:"Twin Trips",rank:5.5,id:"twinTrips"},
           ];
-          // Merge discovered specials into ranking list
+          // Merge specials into ranking list
+          // Round 3 (7-card): show special hands. Phase 1 = always visible, Phase 2/3 = discovery system
           let allHands = [...standardHands];
-          if (gamePhase >= 2 && discoveredHands) {
-            for (const sh of specialHands) {
-              if (discoveredHands.has(sh.id)) allHands.push(sh);
+          if (currentRound === 2) {
+            if (gamePhase >= 2 && discoveredHands) {
+              // Phases 2/3: discovery system — show discovered, mystery for undiscovered
+              for (const sh of specialHands) {
+                if (discoveredHands.has(sh.id)) allHands.push(sh);
+              }
+              const undiscovered = specialHands.filter(sh => !discoveredHands.has(sh.id));
+              if (undiscovered.length > 0) allHands.push({name:`??? (${undiscovered.length} hidden)`, rank: -1, isMystery: true});
+            } else {
+              // Phase 1: all special hands always visible
+              allHands.push(...specialHands);
             }
-            // Add mystery slots for undiscovered specials
-            const undiscovered = specialHands.filter(sh => !discoveredHands.has(sh.id));
-            if (undiscovered.length > 0) allHands.push({name:`??? (${undiscovered.length} hidden)`, rank: -1, isMystery: true});
           }
           allHands.sort((a,b) => b.rank - a.rank);
           return (
@@ -1295,16 +1305,12 @@ function CommunalPoker() {
         toValue: faceValues[Math.floor(Math.random() * 4)],
         toSuit: SUITS[Math.floor(Math.random() * 4)],
       })));
-      // Generate shifty ace offer (phases 2/3 only)
-      if (gamePhase >= 2) {
-        const upgradedSuits = shiftyAces.map(sa => sa.suit);
-        const availableAces = SUITS.filter(s => !upgradedSuits.includes(s));
-        if (availableAces.length > 0) {
-          const randomSuit = availableAces[Math.floor(Math.random() * availableAces.length)];
-          setShiftyAceOffer({ suit: randomSuit });
-        } else {
-          setShiftyAceOffer(null);
-        }
+      // Generate shifty ace offer (available in all phases)
+      const upgradedSuits = shiftyAces.map(sa => sa.suit);
+      const availableAces = SUITS.filter(s => !upgradedSuits.includes(s));
+      if (availableAces.length > 0) {
+        const randomSuit = availableAces[Math.floor(Math.random() * availableAces.length)];
+        setShiftyAceOffer({ suit: randomSuit });
       } else {
         setShiftyAceOffer(null);
       }
@@ -1731,7 +1737,7 @@ function CommunalPoker() {
                   Between sessions, visit The Store to spend coins.
                   <span style={{ color: "#ffd54f", fontWeight: 600 }}> Wild Card</span> (100 coins) becomes any card.
                   <span style={{ color: "#f39c12", fontWeight: 600 }}> Double Score</span> (25 coins) can be activated any round to 2× the score — win or lose!
-                  <span style={{ color: "#9b59b6", fontWeight: 600 }}> Shifty Ace</span> (25 coins, Phase 2/3 only) upgrades a random ace in your deck to also complete low-end runs.
+                  <span style={{ color: "#9b59b6", fontWeight: 600 }}> Shifty Ace</span> (25 coins) upgrades a random ace in your deck to also complete low-end runs.
                   <span style={{ color: "#3498db", fontWeight: 600 }}> Card Upgrades</span> (25 coins) let you sacrifice a low card (4, 5, or 6) and receive a random face card in your next hand.
                 </p>
 
@@ -1971,8 +1977,8 @@ function CommunalPoker() {
                   {hasDoubleScore && <div style={{ fontSize: 10, color: "#f39c12", marginTop: 3, fontWeight: 600 }}>Already owned</div>}
                   {storeCart.has("double-score") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
                 </div>
-                {/* Shifty Ace (phases 2/3 only) */}
-                {gamePhase >= 2 && shiftyAceOffer && (
+                {/* Shifty Ace */}
+                {shiftyAceOffer && (
                   <div
                     onClick={() => toggleStoreItem("shifty-ace")}
                     onTouchEnd={(e) => { e.preventDefault(); toggleStoreItem("shifty-ace"); }}
@@ -1987,7 +1993,7 @@ function CommunalPoker() {
                     {storeCart.has("shifty-ace") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
                   </div>
                 )}
-                {gamePhase >= 2 && !shiftyAceOffer && shiftyAces.length > 0 && (
+                {!shiftyAceOffer && shiftyAces.length > 0 && (
                   <div style={{...storeItemStyle(false, "#9b59b6"), opacity: 0.35, cursor: "default"}}>
                     <div style={{ fontSize: 24, color: "#9b59b6" }}>A{"\u21C6"}</div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#bb8fce", marginTop: 4 }}>Shifty Ace</div>
