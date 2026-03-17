@@ -23,6 +23,20 @@
     0%, 100% { opacity: 1; text-shadow: 0 0 4px rgba(180, 130, 255, 0.4); }
     50% { opacity: 0.6; text-shadow: 0 0 12px rgba(180, 130, 255, 0.8); }
   }
+  .hand-tip { position: relative; }
+  .hand-tip::after {
+    content: attr(data-tip);
+    position: absolute; left: 105%; top: 50%; transform: translateY(-50%);
+    background: rgba(0,0,0,0.92); color: #e8e0cc; font-size: 11px; font-weight: 400;
+    padding: 6px 10px; border-radius: 6px; white-space: nowrap; z-index: 200;
+    pointer-events: none; opacity: 0; transition: opacity 0.1s ease;
+    border: 1px solid rgba(255,255,255,0.12); font-style: normal;
+    max-width: 220px; white-space: normal; line-height: 1.4;
+  }
+  .hand-tip:hover::after { opacity: 1; }
+  @media (pointer: coarse) {
+    .hand-tip::after { left: 0; top: auto; bottom: 105%; transform: none; }
+  }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -74,6 +88,13 @@ const CPU_TRADES = {
   8: [{ fromValue: 8, toValue: 13, count: 2 }],
   9: [{ fromValue: 9, toValue: 14, count: 1 }, { fromValue: 9, toValue: 13, count: 1 }, { fromValue: 9, toValue: 12, count: 1 }, { fromValue: 9, toValue: 11, count: 1 }],
 };
+
+const MULTIPLIERS = [
+  { key: "1.5x", value: 1.5, cost: 20, label: "1.5\u00d7", color: "#3498db" },
+  { key: "2x", value: 2, cost: 50, label: "2\u00d7", color: "#e67e22" },
+  { key: "3x", value: 3, cost: 100, label: "3\u00d7", color: "#e74c3c" },
+  { key: "5x", value: 5, cost: 500, label: "5\u00d7", color: "#9b59b6" },
+];
 
 function createDeck(owner) {
   const deck = [];
@@ -203,6 +224,13 @@ function evaluate7CardHand(cards, discoveredHands) {
   if (allTrips.length >= 2) {
     const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("twinTrips"));
     return { rank: 6.5, name: "Twin Trips", kickers: [allTrips[0].value, allTrips[1].value], isSpecial: true, specialId: "twinTrips", discovered: isDiscovered, hidden: !isDiscovered };
+  }
+
+  const allPairs = groups.filter(g => g.count >= 2);
+  if (allPairs.length >= 3) {
+    const isDiscovered = !useDiscovery || (discoveredHands && discoveredHands.has("entourage"));
+    const pairValues = allPairs.map(p => p.value).sort((a, b) => b - a).slice(0, 3);
+    return { rank: 5.5, name: "The Entourage", kickers: pairValues, isSpecial: true, specialId: "entourage", discovered: isDiscovered, hidden: !isDiscovered };
   }
 
   return evaluateBest5(cards);
@@ -865,24 +893,52 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
             {previewHandEval.name}
           </div>
         )}
-        {currentRound === 0 ? (
-          <div style={{ fontSize: 10, lineHeight: 1.7 }}>
-            {[{name:"Three of a Kind",rank:6},{name:"Mini Royal",rank:5},{name:"Straight Flush",rank:4},{name:"Straight",rank:3},{name:"Flush",rank:2},{name:"Pair",rank:1},{name:"High Card",rank:0}].map((h,i) => {
-              const isActive = previewHandRank !== null && previewHandRank === h.rank;
-              return (
-                <div key={i} style={{
-                  padding: "1px 4px", borderRadius: 3, transition: "all 0.2s",
-                  background: isActive ? "rgba(241,196,15,0.15)" : "transparent",
-                  color: isActive ? "#f1c40f" : "inherit",
-                  opacity: isActive ? 1 : 0.5,
-                  fontWeight: isActive ? 700 : 400,
-                }}>
-                  <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>{h.name}{isActive && " ◄"}
-                </div>
-              );
-            })}
-          </div>
-        ) : (() => {
+        {(() => {
+          const handTips = {
+            "High Card": "No pairs, no flush, no straight. Highest card wins.",
+            "Pair": "Two cards of the same value.",
+            "Flush": "All cards share the same suit.",
+            "Straight": "All cards in consecutive order.",
+            "Straight Flush": "A straight where all cards share the same suit.",
+            "Mini Royal": "A suited A-K-Q (3-card only).",
+            "Three of a Kind": "Three cards of the same value.",
+            "One Pair": "Two cards of the same value.",
+            "Two Pair": "Two different pairs in one hand.",
+            "Full House": "Three of a kind plus a pair.",
+            "Four Kind": "Four cards of the same value.",
+            "Flush": "Five cards of the same suit.",
+            "Straight": "Five cards in consecutive order.",
+            "Str. Flush": "A straight where all five cards share the same suit.",
+            "Royal Flush": "A suited 10-J-Q-K-A. The best standard hand.",
+            "Five of a Kind": "Five cards of the same value (requires null-suit).",
+            "The Entourage": "Three different pairs across 7 cards. Player-only mystery hand.",
+            "Twin Trips": "Two separate three-of-a-kinds across 7 cards. Player-only mystery hand.",
+            "The Highrise": "Four of a kind plus a separate pair across 7 cards. Player-only mystery hand.",
+            "The Mansion": "Four of a kind plus a separate three-of-a-kind across 7 cards. Player-only mystery hand.",
+            "Full Fleet": "Five of a kind plus a separate pair across 7 cards. Player-only mystery hand.",
+            "The Monopoly": "Six or more cards of the same value across 7 cards. Player-only mystery hand.",
+          };
+          if (currentRound === 0) {
+            const hands3 = [{name:"Three of a Kind",rank:6},{name:"Mini Royal",rank:5},{name:"Straight Flush",rank:4},{name:"Straight",rank:3},{name:"Flush",rank:2},{name:"Pair",rank:1},{name:"High Card",rank:0}];
+            return (
+              <div style={{ fontSize: 10, lineHeight: 1.7 }}>
+                {hands3.map((h,i) => {
+                  const isActive = previewHandRank !== null && previewHandRank === h.rank;
+                  return (
+                    <div key={i} title={handTips[h.name] || ""} style={{
+                      padding: "1px 4px", borderRadius: 3, transition: "all 0.2s",
+                      background: isActive ? "rgba(241,196,15,0.15)" : "transparent",
+                      color: isActive ? "#f1c40f" : "inherit",
+                      opacity: isActive ? 1 : 0.5,
+                      fontWeight: isActive ? 700 : 400,
+                    }}>
+                      <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>{h.name}{isActive && " \u25c4"}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          }
           const standardHands = [
             {name:"Five of a Kind",rank:10},{name:"Royal Flush",rank:9},{name:"Str. Flush",rank:8},
             {name:"Four Kind",rank:7},{name:"Full House",rank:6},{name:"Flush",rank:5},
@@ -895,11 +951,12 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
             {name:"The Mansion",rank:9.5,id:"mansion"},
             {name:"The Highrise",rank:7.5,id:"highrise"},
             {name:"Twin Trips",rank:6.5,id:"twinTrips"},
+            {name:"The Entourage",rank:5.5,id:"entourage"},
           ];
           let allHands = [...standardHands];
           if (currentRound === 2 && level >= 4 && discoveredHands) {
             for (const sh of specialHands) {
-              if (discoveredHands.has(sh.id)) allHands.push(sh);
+              if (discoveredHands.has(sh.id)) allHands.push({...sh, isSpecialDiscovered: true});
             }
             const undiscovered = specialHands.filter(sh => !discoveredHands.has(sh.id));
             if (undiscovered.length > 0) allHands.push({name:`??? (${undiscovered.length} hidden)`, rank: -1, isMystery: true});
@@ -910,17 +967,18 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
               {allHands.map((h,i) => {
                 const isActive = previewHandRank !== null && previewHandRank === h.rank;
                 const isMystery = h.isMystery;
+                const isSpecial = h.isSpecialDiscovered;
                 return (
-                  <div key={h.name} style={{
+                  <div key={h.name} title={handTips[h.name] || ""} style={{
                     padding: "1px 4px", borderRadius: 3, transition: "all 0.2s",
                     background: isActive ? "rgba(241,196,15,0.15)" : isMystery ? "rgba(155,89,182,0.08)" : "transparent",
-                    color: isActive ? "#f1c40f" : isMystery ? "#9b59b6" : "inherit",
+                    color: isActive ? "#f1c40f" : (isMystery || isSpecial) ? "#9b59b6" : "inherit",
                     opacity: isActive ? 1 : isMystery ? 0.6 : 0.5,
-                    fontWeight: isActive ? 700 : 400,
+                    fontWeight: isActive ? 700 : isSpecial ? 600 : 400,
                     fontStyle: isMystery ? "italic" : "normal",
                   }}>
                     {!isMystery && <span style={{ opacity: isActive ? 0.8 : 0.4, marginRight: 4 }}>{i+1}.</span>}
-                    {h.name}{isActive && " ◄"}
+                    {h.name}{isActive && " \u25c4"}
                   </div>
                 );
               })}
@@ -1072,8 +1130,8 @@ function CommunalPoker() {
   const [storeCart, setStoreCart] = useState(new Set());
   const [coins, setCoins] = useState(0);
   const [winStreak, setWinStreak] = useState(0);
-  const [hasDoubleScore, setHasDoubleScore] = useState(false);
-  const [doubleScoreActive, setDoubleScoreActive] = useState(false);
+  const [ownedMultipliers, setOwnedMultipliers] = useState(new Set());
+  const [activeMultiplier, setActiveMultiplier] = useState(null);
   const [swapCardOffers, setSwapCardOffers] = useState([]);
   const [discoveredHands, setDiscoveredHands] = useState(new Set());
   const [level, setLevel] = useState(1);
@@ -1154,8 +1212,8 @@ function CommunalPoker() {
     setCpuDeckBase(cBase);
     setWinStreak(0);
     setCoins(0);
-    setHasDoubleScore(false);
-    setDoubleScoreActive(false);
+    setOwnedMultipliers(new Set());
+    setActiveMultiplier(null);
     setDiscoveredHands(new Set());
     setCheckpoints({});
     deckModsRef.current = [];
@@ -1279,9 +1337,11 @@ function CommunalPoker() {
 
   const proceedFromStore = useCallback(() => {
     let cost = 0;
-    if (storeCart.has("double-score")) {
-      setHasDoubleScore(true);
-      cost += 25;
+    for (const m of MULTIPLIERS) {
+      if (storeCart.has(`mult-${m.key}`)) {
+        setOwnedMultipliers(prev => new Set([...prev, m.key]));
+        cost += m.cost;
+      }
     }
     swapCardOffers.forEach((sc, i) => {
       if (storeCart.has(`swap-${i}`)) {
@@ -1312,7 +1372,7 @@ function CommunalPoker() {
   const placeCommunal = useCallback(() => {
     const nd = [...potDeck]; const card = nd.shift(); setPotDeck(nd);
     setCommunalCards(prev => [...prev, card]); setSelected(new Set()); setShowAiCards(false);
-    setDoubleScoreActive(false);
+    setActiveMultiplier(null);
     const rn = phase === PHASES.R1_COMMUNAL ? 1 : phase === PHASES.R2_COMMUNAL ? 2 : 3;
     setMessage(`Round ${rn}: A communal card is revealed!`);
     setTimeout(() => {
@@ -1369,14 +1429,15 @@ function CommunalPoker() {
       pe.discovered = true;
       pe.hidden = false;
     }
-    if (ae.isSpecial && ae.hidden) {
+    if (ae.isSpecial) {
       const aeFallback = evaluateBest5(afh);
       Object.assign(ae, aeFallback);
     }
     const res = compareHands(pe, ae);
     const rankDiff = Math.abs(pe.rank - ae.rank);
     let w, totalPoints, streakMultiplier = 1;
-    const isDoubled = doubleScoreActive;
+    const multConfig = activeMultiplier ? MULTIPLIERS.find(m => m.key === activeMultiplier) : null;
+    const multValue = multConfig ? multConfig.value : 1;
     if (res > 0) {
       w = "player"; totalPoints = points + (rankDiff * 50);
       const newStreak = winStreak + 1;
@@ -1384,31 +1445,33 @@ function CommunalPoker() {
         streakMultiplier = 1 + (0.25 * (newStreak - 1));
         totalPoints = Math.round(totalPoints * streakMultiplier);
       }
-      if (isDoubled) totalPoints = totalPoints * 2;
+      if (multValue > 1) totalPoints = Math.round(totalPoints * multValue);
       setWinStreak(newStreak);
       setBankScore(s => s + totalPoints);
     } else if (res < 0) {
       w = "ai"; totalPoints = points + (rankDiff * 50);
-      if (isDoubled) totalPoints = totalPoints * 2;
+      if (multValue > 1) totalPoints = Math.round(totalPoints * multValue);
       setWinStreak(0);
       setBankScore(s => s - totalPoints);
     } else {
       w = "tie"; totalPoints = 0;
     }
-    if (isDoubled) { setHasDoubleScore(false); setDoubleScoreActive(false); }
+    if (activeMultiplier) {
+      setOwnedMultipliers(prev => { const n = new Set(prev); n.delete(activeMultiplier); return n; });
+      setActiveMultiplier(null);
+    }
     const coinsEarned = w === "player" ? Math.ceil(totalPoints * 0.10) : 0;
     if (coinsEarned > 0) setCoins(c => c + coinsEarned);
     observeHandResult(opponentModelRef.current, round, pe.rank);
-    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff * 50, streakMultiplier, coinsEarned, isDoubled }]);
+    setRoundResults(prev => [...prev, { winner: w, pEval: pe, aEval: ae, points: totalPoints, basePoints: points, bonus: rankDiff * 50, streakMultiplier, coinsEarned, multLabel: multConfig ? multConfig.label : null }]);
     setShowAiCards(true);
     let bonusText;
-    if (isDoubled && streakMultiplier > 1) {
+    if (multValue > 1 && streakMultiplier > 1) {
       const preStreak = points + (rankDiff * 50);
-      const preDouble = Math.round(preStreak * streakMultiplier);
-      bonusText = ` (${preStreak} \u00d7${streakMultiplier.toFixed(2)} streak \u00d72 = ${totalPoints})`;
-    } else if (isDoubled) {
-      const preDouble = points + (rankDiff * 50);
-      bonusText = ` (${preDouble} \u00d7 2 doubled = ${totalPoints})`;
+      bonusText = ` (${preStreak} \u00d7${streakMultiplier.toFixed(2)} streak \u00d7${multValue} = ${totalPoints})`;
+    } else if (multValue > 1) {
+      const preBase = points + (rankDiff * 50);
+      bonusText = ` (${preBase} \u00d7 ${multValue} = ${totalPoints})`;
     } else if (streakMultiplier > 1) {
       const preStreak = points + (rankDiff * 50);
       bonusText = ` (${preStreak} \u00d7 ${streakMultiplier.toFixed(2)} streak = ${totalPoints})`;
@@ -1417,16 +1480,16 @@ function CommunalPoker() {
     } else {
       bonusText = "";
     }
-    const doubleTag = isDoubled ? " \u00d72 DOUBLED!" : "";
+    const multTag = multConfig ? ` \u00d7${multValue} ${multConfig.label}!` : "";
     const streakMsg = w === "player" && level >= 4 && winStreak + 1 >= 2 ? ` \uD83D\uDD25 ${winStreak + 1} streak!` : "";
     const coinMsg = coinsEarned > 0 ? ` +${coinsEarned} coin${coinsEarned !== 1 ? "s" : ""}` : "";
-    setMessage(`${w === "player" ? "✓" : w === "ai" ? "✗" : "="} ${pe.name} ${w === "tie" ? "" : w === "player" ? `> ${ae.name}` : `< ${ae.name}`}${bonusText}${doubleTag}${streakMsg}${coinMsg}`);
+    setMessage(`${w === "player" ? "\u2713" : w === "ai" ? "\u2717" : "="} ${pe.name} ${w === "tie" ? "" : w === "player" ? `> ${ae.name}` : `< ${ae.name}`}${bonusText}${multTag}${streakMsg}${coinMsg}`);
     setTimeout(() => {
       if (phase === PHASES.R1_PLAY) setPhase(PHASES.R1_REVEAL);
       else if (phase === PHASES.R2_PLAY) setPhase(PHASES.R2_REVEAL);
       else setPhase(PHASES.R3_REVEAL);
     }, 300);
-  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase, discoveredHands, doubleScoreActive, winStreak, level]);
+  }, [roundInfo, selected, playerHand, aiHand, communalCards, playerPlayed, aiPlayed, phase, discoveredHands, activeMultiplier, winStreak, level]);
 
   const nextRound = useCallback(() => {
     if (phase === PHASES.R1_REVEAL) setPhase(PHASES.R2_COMMUNAL);
@@ -1756,7 +1819,8 @@ function CommunalPoker() {
         {phase === PHASES.STORE && (() => {
           const suitSymbols = { spades: "\u2660", hearts: "\u2665", diamonds: "\u2666", clubs: "\u2663" };
           const suitColors = { spades: "#e0e0e0", hearts: "#e74c3c", diamonds: "#3498db", clubs: "#2ecc71" };
-          let cartCost = (storeCart.has("double-score") ? 25 : 0);
+          let cartCost = 0;
+          for (const m of MULTIPLIERS) { if (storeCart.has(`mult-${m.key}`)) cartCost += m.cost; }
           swapCardOffers.forEach((_, i) => { if (storeCart.has(`swap-${i}`)) cartCost += 25; });
           const afterPurchase = coins - cartCost;
           const storeItemStyle = (sel, color) => ({
@@ -1775,21 +1839,27 @@ function CommunalPoker() {
                 {"\uD83E\uDE99"} {coins} coin{coins !== 1 ? "s" : ""}
               </div>
 
-              {/* Powers (25 coins) */}
-              <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.4, marginTop: 4 }}>Powers — 25 coins</div>
-              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
-                <div
-                  onClick={() => !hasDoubleScore && toggleStoreItem("double-score")}
-                  onTouchEnd={(e) => { e.preventDefault(); !hasDoubleScore && toggleStoreItem("double-score"); }}
-                  style={{...storeItemStyle(storeCart.has("double-score"), "#e67e22"), ...(hasDoubleScore ? { opacity: 0.35, cursor: "default" } : {})}}
-                >
-                  <div style={{ fontSize: 28, color: "#e67e22" }}>×2</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#f39c12", marginTop: 4 }}>Double Score</div>
-                  <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, lineHeight: 1.4 }}>Activate any round to 2× score (win or lose)</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>25 {"\uD83E\uDE99"}</div>
-                  {hasDoubleScore && <div style={{ fontSize: 10, color: "#f39c12", marginTop: 3, fontWeight: 600 }}>Already owned</div>}
-                  {storeCart.has("double-score") && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>✓ Selected</div>}
-                </div>
+              {/* Multiplier Powers */}
+              <div style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", opacity: 0.4, marginTop: 4 }}>Score Multipliers</div>
+              <div style={{ fontSize: 10, opacity: 0.35, marginTop: -4, marginBottom: 4 }}>Activate on any round — applies to win or loss. One use.</div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center" }}>
+                {MULTIPLIERS.map(m => {
+                  const owned = ownedMultipliers.has(m.key);
+                  const inCart = storeCart.has(`mult-${m.key}`);
+                  return (
+                    <div key={m.key}
+                      onClick={() => !owned && toggleStoreItem(`mult-${m.key}`)}
+                      onTouchEnd={(e) => { e.preventDefault(); !owned && toggleStoreItem(`mult-${m.key}`); }}
+                      style={{...storeItemStyle(inCart, m.color), width: 120, ...(owned ? { opacity: 0.35, cursor: "default" } : {})}}
+                    >
+                      <div style={{ fontSize: 26, fontWeight: 700, color: m.color }}>{m.label}</div>
+                      <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, lineHeight: 1.4 }}>Multiply score {m.label}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: "#f1c40f", marginTop: 6 }}>{m.cost} {"\uD83E\uDE99"}</div>
+                      {owned && <div style={{ fontSize: 10, color: m.color, marginTop: 3, fontWeight: 600 }}>Already owned</div>}
+                      {inCart && <div style={{ fontSize: 10, color: "#2ecc71", marginTop: 3, fontWeight: 600 }}>{"\u2713"} Selected</div>}
+                    </div>
+                  );
+                })}
               </div>
 
               {/* Swap Cards (25 coins) */}
@@ -1978,18 +2048,29 @@ function CommunalPoker() {
               )}
               {isPlay && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
-                  {hasDoubleScore && !doubleScoreActive && (
-                    <button onClick={() => setDoubleScoreActive(true)} onTouchEnd={(e) => { e.preventDefault(); setDoubleScoreActive(true); }} style={{...btn("#e67e22", "#f39c12"), fontSize: 12, padding: "8px 12px", minHeight: 36}}>×2 Double</button>
+                  {ownedMultipliers.size > 0 && !activeMultiplier && (
+                    MULTIPLIERS.filter(m => ownedMultipliers.has(m.key)).map(m => (
+                      <button key={m.key} onClick={() => setActiveMultiplier(m.key)} onTouchEnd={(e) => { e.preventDefault(); setActiveMultiplier(m.key); }}
+                        style={{...btn(m.color, m.color), fontSize: 12, padding: "8px 12px", minHeight: 36}}>
+                        {m.label}
+                      </button>
+                    ))
                   )}
-                  {doubleScoreActive && (
-                    <button onClick={() => setDoubleScoreActive(false)} onTouchEnd={(e) => { e.preventDefault(); setDoubleScoreActive(false); }} style={{...btn("#c0392b", "#e74c3c"), fontSize: 12, padding: "8px 12px", minHeight: 36, boxShadow: "0 0 12px rgba(231,76,60,0.5)"}}>×2 ACTIVE — tap to cancel</button>
-                  )}
+                  {activeMultiplier && (() => {
+                    const am = MULTIPLIERS.find(m => m.key === activeMultiplier);
+                    return (
+                      <button onClick={() => setActiveMultiplier(null)} onTouchEnd={(e) => { e.preventDefault(); setActiveMultiplier(null); }}
+                        style={{...btn("#c0392b", "#e74c3c"), fontSize: 12, padding: "8px 12px", minHeight: 36, boxShadow: `0 0 12px ${am.color}88`}}>
+                        {am.label} ACTIVE — tap to cancel
+                      </button>
+                    );
+                  })()}
                   <button onClick={() => confirmPlay()} onTouchEnd={(e) => { e.preventDefault(); confirmPlay(); }} disabled={selected.size !== roundInfo.cardsToPlay}
                     style={{
                       ...btn(selected.size === roundInfo.cardsToPlay ? "#2980b9" : "#555", selected.size === roundInfo.cardsToPlay ? "#3498db" : "#666"),
                       opacity: selected.size === roundInfo.cardsToPlay ? 1 : 0.5,
                     }}>
-                    Play {roundInfo.cardsToPlay} Cards{doubleScoreActive ? " (×2)" : ""}
+                    Play {roundInfo.cardsToPlay} Cards{activeMultiplier ? ` (${MULTIPLIERS.find(m => m.key === activeMultiplier).label})` : ""}
                   </button>
                 </div>
               )}
