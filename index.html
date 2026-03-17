@@ -1080,6 +1080,7 @@ function CommunalPoker() {
   const [playerDeckBase, setPlayerDeckBase] = useState([]);
   const [cpuDeckBase, setCpuDeckBase] = useState([]);
   const [checkpoints, setCheckpoints] = useState({});
+  const [debugMode, setDebugMode] = useState(false);
 
   const deckModsRef = useRef([]);
   const opponentModelRef = useRef(createOpponentModel());
@@ -1136,14 +1137,14 @@ function CommunalPoker() {
     setCommunalCards([]);
     setPlayerPlayed([[], [], []]); setAiPlayed([[], [], []]);
     setSelected(new Set());
-    if (resetBank) setBankScore(0);
+    if (resetBank) setBankScore(debugMode ? 10000 : 0);
     setRoundResults([]); setShowAiCards(false);
     setAiDiscardCounts([]);
     setCurrentSession(sessionNum);
     setStoreCart(new Set());
     setShowInspector(null);
     setPhase(PHASES.R1_COMMUNAL); setMessage("");
-  }, [level, playerDeckBase, cpuDeckBase]);
+  }, [level, playerDeckBase, cpuDeckBase, debugMode]);
 
   const startGame = useCallback(() => {
     const pBase = createDeck("player");
@@ -1172,14 +1173,14 @@ function CommunalPoker() {
     setCommunalCards([]);
     setPlayerPlayed([[], [], []]); setAiPlayed([[], [], []]);
     setSelected(new Set());
-    setBankScore(0);
+    setBankScore(debugMode ? 10000 : 0);
     setRoundResults([]); setShowAiCards(false);
     setAiDiscardCounts([]);
     setCurrentSession(0);
     setStoreCart(new Set());
     setShowInspector(null);
     setPhase(PHASES.R1_COMMUNAL); setMessage("");
-  }, []);
+  }, [debugMode]);
 
   const advanceLevel = useCallback(() => {
     const nextLevel = level + 1;
@@ -1214,7 +1215,7 @@ function CommunalPoker() {
     }
     setLevel(nextLevel);
     currentLevel = nextLevel;
-    setBankScore(0);
+    setBankScore(debugMode ? 10000 : 0);
     setWinStreak(0);
     let pd = [...playerDeckBase];
     for (const mod of deckModsRef.current) {
@@ -1243,7 +1244,7 @@ function CommunalPoker() {
     setStoreCart(new Set());
     setShowInspector(null);
     setPhase(PHASES.R1_COMMUNAL); setMessage("");
-  }, [level, cpuDeckBase, playerDeckBase, coins, discoveredHands]);
+  }, [level, cpuDeckBase, playerDeckBase, coins, discoveredHands, debugMode]);
 
   useEffect(() => {
     if (phase === PHASES.STORE) {
@@ -1545,8 +1546,39 @@ function CommunalPoker() {
           </div>
         )}
 
-        {/* Rules info button — top right */}
-        <button onClick={() => setShowRules(true)} onTouchEnd={(e) => { e.preventDefault(); setShowRules(true); }} style={{ position: "absolute", top: 10, right: 10, zIndex: 20, width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "#f0e6d3", fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", touchAction: "manipulation", WebkitTapHighlightColor: "transparent", fontFamily: "'Georgia', serif", lineHeight: 1 }}>?</button>
+        {/* Debug toggle + Rules button — top right */}
+        <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", alignItems: "center", gap: 8 }}>
+          <div
+            onClick={() => {
+              const next = !debugMode;
+              setDebugMode(next);
+              setBankScore(s => next ? s + 10000 : s - 10000);
+            }}
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              const next = !debugMode;
+              setDebugMode(next);
+              setBankScore(s => next ? s + 10000 : s - 10000);
+            }}
+            style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", touchAction: "manipulation", WebkitTapHighlightColor: "transparent", userSelect: "none" }}
+          >
+            <span style={{ fontSize: 9, letterSpacing: 1, textTransform: "uppercase", opacity: debugMode ? 0.9 : 0.35, color: debugMode ? "#2ecc71" : "#f0e6d3" }}>Debug</span>
+            <div style={{
+              width: 34, height: 18, borderRadius: 9, padding: 2,
+              background: debugMode ? "rgba(46,204,113,0.5)" : "rgba(255,255,255,0.12)",
+              border: debugMode ? "1px solid rgba(46,204,113,0.6)" : "1px solid rgba(255,255,255,0.15)",
+              transition: "all 0.2s ease", position: "relative",
+            }}>
+              <div style={{
+                width: 14, height: 14, borderRadius: "50%",
+                background: debugMode ? "#2ecc71" : "rgba(255,255,255,0.3)",
+                transition: "all 0.2s ease",
+                transform: debugMode ? "translateX(16px)" : "translateX(0)",
+              }} />
+            </div>
+          </div>
+          <button onClick={() => setShowRules(true)} onTouchEnd={(e) => { e.preventDefault(); setShowRules(true); }} style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)", color: "#f0e6d3", fontSize: 18, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", touchAction: "manipulation", WebkitTapHighlightColor: "transparent", fontFamily: "'Georgia', serif", lineHeight: 1 }}>?</button>
+        </div>
 
         {/* Rules Modal */}
         {showRules && (
