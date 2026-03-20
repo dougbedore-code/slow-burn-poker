@@ -7,12 +7,13 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Slow Burn Poker">
 <title>Slow Burn Poker</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Crimson+Text:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body, #root { width: 100%; height: 100%; overflow: hidden; }
   html { touch-action: manipulation; }
   body {
-    background: #0a2912;
+    background: #0d0a06;
     -webkit-user-select: none; user-select: none;
     -webkit-touch-callout: none;
     overscroll-behavior: none;
@@ -23,6 +24,9 @@
     0%, 100% { opacity: 1; text-shadow: 0 0 4px rgba(180, 130, 255, 0.4); }
     50% { opacity: 0.6; text-shadow: 0 0 12px rgba(180, 130, 255, 0.8); }
   }
+  @keyframes cardGlowRed { 0%, 100% { box-shadow: 0 0 8px rgba(204,34,34,0.3), 0 4px 12px rgba(0,0,0,0.4); } 50% { box-shadow: 0 0 16px rgba(204,34,34,0.5), 0 4px 12px rgba(0,0,0,0.4); } }
+  @keyframes cardGlowBlack { 0%, 100% { box-shadow: 0 0 8px rgba(160,160,200,0.2), 0 4px 12px rgba(0,0,0,0.4); } 50% { box-shadow: 0 0 16px rgba(160,160,200,0.35), 0 4px 12px rgba(0,0,0,0.4); } }
+  @keyframes cardGlowGold { 0%, 100% { box-shadow: 0 0 10px rgba(232,213,163,0.4), 0 4px 12px rgba(0,0,0,0.4); } 50% { box-shadow: 0 0 20px rgba(232,213,163,0.6), 0 4px 12px rgba(0,0,0,0.4); } }
   .hand-tip { position: relative; }
   .hand-tip::after {
     content: attr(data-tip);
@@ -38,12 +42,461 @@
     .hand-tip::after { left: 0; top: auto; bottom: 105%; transform: none; }
   }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
+
+<!-- PixiJS Player Hand System -->
+<script>
+window.pixiHand = (function() {
+  if (!window.PIXI) return null;
+
+  const CARD_W = 110, CARD_H = 160, CORNER_R = 10, OVERLAP = 50;
+  const SUIT_DATA = {
+    spades:   { symbol: '\u2660', color: '#222222', hex: 0x222222, glowHex: 0x6688aa },
+    clubs:    { symbol: '\u2663', color: '#222222', hex: 0x222222, glowHex: 0x6688aa },
+    hearts:   { symbol: '\u2665', color: '#cc1111', hex: 0xcc1111, glowHex: 0xcc3333 },
+    diamonds: { symbol: '\u2666', color: '#cc1111', hex: 0xcc1111, glowHex: 0xcc3333 },
+    null:     { symbol: '\u2205', color: '#8B5E3C', hex: 0x8b5e3c, glowHex: 0xaa8844 },
+  };
+  const VALUE_LABELS = {2:'2',3:'3',4:'4',5:'5',6:'6',7:'7',8:'8',9:'9',10:'10',11:'J',12:'Q',13:'K',14:'A'};
+
+  let app = null, cardsContainer = null, particleContainer = null;
+  let W = 0, H = 0, cards = [], particles = [], tick = 0;
+  let selectCallback = null;
+
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  // ── TEXTURE GENERATION (from demo) ──
+  const texCache = {}, backTexCache = {};
+
+  function createCardTexture(rank, suit) {
+    const c = new PIXI.Container();
+    // Shadow layers
+    const s2 = new PIXI.Graphics();
+    s2.beginFill(0x000000, 0.07); s2.drawRoundedRect(10, 14, CARD_W-20, CARD_H-20, 20); s2.endFill();
+    s2.filters = [new PIXI.BlurFilter(28)]; c.addChild(s2);
+    const s1 = new PIXI.Graphics();
+    s1.beginFill(0x000000, 0.15); s1.drawRoundedRect(8, 10, CARD_W-14, CARD_H-14, 18); s1.endFill();
+    s1.filters = [new PIXI.BlurFilter(18)]; c.addChild(s1);
+    // Card body
+    const body = new PIXI.Graphics();
+    body.beginFill(0xf5f2ec); body.drawRoundedRect(0, 0, CARD_W, CARD_H, CORNER_R); body.endFill();
+    for (let i = 0; i < 300; i++) {
+      const tx = 4+Math.random()*(CARD_W-8), ty = 4+Math.random()*(CARD_H-8);
+      body.beginFill(Math.random()>0.5 ? 0xece8df : 0xfaf7f0, 0.3+Math.random()*0.2);
+      body.drawRect(tx, ty, 1, 1); body.endFill();
+    }
+    body.lineStyle(1, 0xccccbb, 0.6); body.drawRoundedRect(0, 0, CARD_W, CARD_H, CORNER_R);
+    c.addChild(body);
+    // Inner margin
+    const inner = new PIXI.Graphics();
+    inner.lineStyle(0.5, 0xddddcc, 0.3); inner.drawRoundedRect(5, 5, CARD_W-10, CARD_H-10, CORNER_R-2);
+    c.addChild(inner);
+    // Edge shading
+    const edge = new PIXI.Graphics();
+    edge.beginFill(0x000000, 0.04); edge.drawRoundedRect(2, CARD_H-8, CARD_W-4, 8, CORNER_R); edge.endFill();
+    edge.beginFill(0x000000, 0.03); edge.drawRoundedRect(CARD_W-5, 2, 5, CARD_H-4, CORNER_R); edge.endFill();
+    edge.beginFill(0xffffff, 0.06); edge.drawRoundedRect(2, 0, CARD_W-4, 4, CORNER_R); edge.endFill();
+    c.addChild(edge);
+    const tc = suit.color;
+    // Top-left rank
+    c.addChild(Object.assign(new PIXI.Text(rank, { fontFamily:'Cinzel,Georgia,serif', fontSize:22, fontWeight:'900', fill:tc }), { x:9, y:7 }));
+    // Top-left suit
+    c.addChild(Object.assign(new PIXI.Text(suit.symbol, { fontFamily:'serif', fontSize:18, fill:tc }), { x: rank==='10'?11:12, y:29 }));
+    // Center suit
+    const cs = new PIXI.Text(suit.symbol, { fontFamily:'serif', fontSize:88, fill:tc,
+      dropShadow:true, dropShadowColor:suit.hex===0xcc1111?'#440000':'#000000', dropShadowBlur:4, dropShadowDistance:1, dropShadowAlpha:0.15 });
+    cs.anchor.set(0.5); cs.x=CARD_W/2; cs.y=CARD_H/2; c.addChild(cs);
+    // Bottom-right rank (inverted)
+    const br = new PIXI.Text(rank, { fontFamily:'Cinzel,Georgia,serif', fontSize:22, fontWeight:'900', fill:tc });
+    br.anchor.set(0.5); br.x=CARD_W-18; br.y=CARD_H-18; br.rotation=Math.PI; c.addChild(br);
+    // Bottom-right suit (inverted)
+    const bs = new PIXI.Text(suit.symbol, { fontFamily:'serif', fontSize:18, fill:tc });
+    bs.anchor.set(0.5); bs.x=rank==='10'?CARD_W-20:CARD_W-19; bs.y=CARD_H-38; bs.rotation=Math.PI; c.addChild(bs);
+    return app.renderer.generateTexture(c);
+  }
+
+  function getTexture(suitName, value) {
+    const suit = SUIT_DATA[suitName] || SUIT_DATA.null;
+    const rank = VALUE_LABELS[value] || '?';
+    const key = rank + '-' + suitName;
+    if (!texCache[key]) texCache[key] = createCardTexture(rank, suit);
+    return texCache[key];
+  }
+
+  function getBackTexture() {
+    if (backTexCache.default) return backTexCache.default;
+    const c = new PIXI.Container();
+    const s2 = new PIXI.Graphics();
+    s2.beginFill(0x000000, 0.07); s2.drawRoundedRect(10, 14, CARD_W-20, CARD_H-20, 20); s2.endFill();
+    s2.filters = [new PIXI.BlurFilter(28)]; c.addChild(s2);
+    const body = new PIXI.Graphics();
+    body.beginFill(0x1a2030); body.drawRoundedRect(0, 0, CARD_W, CARD_H, CORNER_R); body.endFill();
+    body.lineStyle(1, 0x3a4a5a, 0.6); body.drawRoundedRect(0, 0, CARD_W, CARD_H, CORNER_R);
+    for (let i = -CARD_H; i < CARD_W+CARD_H; i += 8) {
+      body.lineStyle(0.5, 0x3a4a5a, 0.25); body.moveTo(i, 0); body.lineTo(i+CARD_H, CARD_H);
+    }
+    c.addChild(body);
+    const t = new PIXI.Text('SB', { fontFamily:'Cinzel,serif', fontSize:20, fontWeight:'900', fill:'#ffffff' });
+    t.anchor.set(0.5); t.x=CARD_W/2; t.y=CARD_H/2; t.alpha=0.12; c.addChild(t);
+    backTexCache.default = app.renderer.generateTexture(c);
+    return backTexCache.default;
+  }
+
+  // ── PARTICLES ──
+  function spawnParticles(x, y, color, count, symbol) {
+    const hc = '#'+color.toString(16).padStart(6,'0');
+    for (let i = 0; i < count; i++) {
+      let p;
+      if (symbol) {
+        p = new PIXI.Text(symbol, { fontFamily:'serif', fontSize:8+Math.random()*10, fill:hc });
+        p.anchor.set(0.5);
+      } else {
+        p = new PIXI.Graphics();
+        p.beginFill(color, 0.4+Math.random()*0.5); p.drawCircle(0,0,1+Math.random()*2.5); p.endFill();
+      }
+      p.alpha = 0.5+Math.random()*0.4;
+      p.x = x+(Math.random()-0.5)*50; p.y = y+(Math.random()-0.5)*50;
+      p._vx = (Math.random()-0.5)*3; p._vy = (Math.random()-0.5)*3-1.5;
+      p._life = 1; p._decay = 0.012+Math.random()*0.02;
+      p.rotation = (Math.random()-0.5)*0.8;
+      particleContainer.addChild(p); particles.push(p);
+    }
+  }
+
+  function spawnEmber() {
+    const p = new PIXI.Graphics();
+    const cols = [0xe8d5a3, 0x55bb66, 0x88cc88, 0xaa8844];
+    p.beginFill(cols[Math.floor(Math.random()*cols.length)], 0.15);
+    p.drawCircle(0,0, 0.5+Math.random()*1.2); p.endFill();
+    p.x = W*0.15+Math.random()*W*0.7; p.y = H+5;
+    p._vx = (Math.random()-0.5)*0.2; p._vy = -0.15-Math.random()*0.4;
+    p._life = 1; p._decay = 0.0015+Math.random()*0.003;
+    particleContainer.addChild(p); particles.push(p);
+  }
+
+  // ── LAYOUT ──
+  function layoutHand() {
+    const n = cards.length;
+    if (n === 0) return;
+    const sorted = [...cards].sort((a,b) => a._handIndex - b._handIndex);
+    const totalW = CARD_W + (n-1)*OVERLAP;
+    const startX = W/2 - totalW/2 + CARD_W/2;
+    const baseY = H - 190;
+    sorted.forEach((card, i) => {
+      const t = n > 1 ? (i/(n-1))*2-1 : 0;
+      const archY = t*t*35;
+      const rot = t*0.2;
+      card._baseY = baseY;
+      card._homeX = startX + i*OVERLAP;
+      card._homeY = baseY + archY;
+      card._homeRot = rot;
+      if (!card._dragging) {
+        card._targetX = card._homeX;
+        card._targetY = card._homeY;
+        card._targetRot = card._homeRot;
+        card._targetScale = 1;
+      }
+    });
+    rebuildZOrder();
+  }
+
+  function rebuildZOrder() {
+    const sorted = [...cards].sort((a,b) => a._handIndex - b._handIndex);
+    sorted.forEach((card, i) => {
+      if (!card._dragging && !card._hovered) {
+        const base = Math.min(i*3, cardsContainer.children.length-1);
+        try {
+          cardsContainer.setChildIndex(card._glow, Math.min(base, cardsContainer.children.length-1));
+          cardsContainer.setChildIndex(card, Math.min(base+1, cardsContainer.children.length-1));
+          cardsContainer.setChildIndex(card._selOutline, Math.min(base+2, cardsContainer.children.length-1));
+        } catch(e) {}
+      }
+    });
+  }
+
+  function reorderCard(draggedCard, newIndex) {
+    const oldIndex = draggedCard._handIndex;
+    if (oldIndex === newIndex) return;
+    cards.forEach(c => {
+      if (c === draggedCard) return;
+      if (oldIndex < newIndex) { if (c._handIndex > oldIndex && c._handIndex <= newIndex) c._handIndex--; }
+      else { if (c._handIndex >= newIndex && c._handIndex < oldIndex) c._handIndex++; }
+    });
+    draggedCard._handIndex = newIndex;
+    layoutHand();
+  }
+
+  let lastHandIds = '';
+
+  // ── PUBLIC API ──
+  return {
+    init: function(containerEl, eventEl) {
+      if (app) return;
+      const evTarget = eventEl || containerEl;
+      W = containerEl.offsetWidth || window.innerWidth;
+      H = containerEl.offsetHeight || window.innerHeight;
+
+      const canvas = document.createElement('canvas');
+      canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;';
+      containerEl.style.position = 'relative';
+      containerEl.appendChild(canvas);
+
+      app = new PIXI.Application({ view: canvas, width: W, height: H, backgroundAlpha: 0, antialias: true, resolution: window.devicePixelRatio||1, autoDensity: true });
+      W = app.screen.width; H = app.screen.height;
+
+      // Card hit testing — canvas is pointer-events:none, we handle interactions from DOM
+      function hitTestCards(clientX, clientY) {
+        const rect = canvas.getBoundingClientRect();
+        const sx = (clientX - rect.left) / rect.width * W;
+        const sy = (clientY - rect.top) / rect.height * H;
+        // Check cards in z-order: highest _handIndex first (rightmost card is on top)
+        const sorted = [...cards].sort((a, b) => b._handIndex - a._handIndex);
+        for (let i = 0; i < sorted.length; i++) {
+          const c = sorted[i];
+          const hw = CARD_W * c.scale.x / 2, hh = CARD_H * c.scale.y / 2;
+          if (sx >= c.x - hw && sx <= c.x + hw && sy >= c.y - hh && sy <= c.y + hh) return { card: c, sx, sy };
+        }
+        return null;
+      }
+
+      // Interaction state
+      let activeCard = null, downPos = null, didDrag = false, downTime = 0, longPressTimer = null;
+
+      evTarget.addEventListener('pointerdown', (e) => {
+        const hit = hitTestCards(e.clientX, e.clientY);
+        if (!hit || !hit.card.interactive) return;
+        activeCard = hit.card;
+        downPos = { x: e.clientX, y: e.clientY };
+        const rect = canvas.getBoundingClientRect();
+        activeCard._dragOffX = hit.sx - activeCard.x;
+        activeCard._dragOffY = hit.sy - activeCard.y;
+        didDrag = false;
+        downTime = Date.now();
+
+        const startDrag = () => {
+          didDrag = true; activeCard._dragging = true; activeCard._returning = false; activeCard._hovered = false; activeCard._targetScale = 1.08;
+          spawnParticles(activeCard.x, activeCard.y, activeCard._glowColor, 4, activeCard._suitSymbol);
+        };
+
+        if (e.pointerType === 'touch') {
+          longPressTimer = setTimeout(startDrag, 250);
+        }
+      });
+
+      evTarget.addEventListener('pointermove', (e) => {
+        if (!activeCard) {
+          // Hover detection
+          const hit = hitTestCards(e.clientX, e.clientY);
+          cards.forEach(c => { c._hovered = false; });
+          if (hit && hit.card.interactive) hit.card._hovered = true;
+          return;
+        }
+        const dx = e.clientX - downPos.x, dy = e.clientY - downPos.y;
+        const dist = Math.abs(dx) + Math.abs(dy);
+        if (longPressTimer && dist > 8) { clearTimeout(longPressTimer); longPressTimer = null; }
+        if (!activeCard._dragging && !didDrag && dist > 6 && downTime > 0 && e.pointerType !== 'touch') {
+          didDrag = true; activeCard._dragging = true; activeCard._returning = false; activeCard._hovered = false; activeCard._targetScale = 1.08;
+          spawnParticles(activeCard.x, activeCard.y, activeCard._glowColor, 4, activeCard._suitSymbol);
+        }
+        if (activeCard._dragging) {
+          const rect = canvas.getBoundingClientRect();
+          const sx = (e.clientX - rect.left) / rect.width * W;
+          const sy = (e.clientY - rect.top) / rect.height * H;
+          activeCard._targetX = sx - activeCard._dragOffX;
+          activeCard._targetY = sy - activeCard._dragOffY;
+          if (Math.abs(activeCard._targetY - activeCard._homeY) < CARD_H * 1.2) {
+            const sorted = [...cards].sort((a,b) => a._handIndex - b._handIndex);
+            let ni = activeCard._handIndex;
+            for (let j = 0; j < sorted.length; j++) {
+              if (sorted[j] === activeCard) continue;
+              if (activeCard._targetX < sorted[j]._homeX && j < activeCard._handIndex) { ni = j; break; }
+              else if (activeCard._targetX > sorted[j]._homeX && j > activeCard._handIndex) { ni = j; }
+            }
+            if (ni !== activeCard._handIndex) reorderCard(activeCard, ni);
+          }
+        }
+      });
+
+      const endInteraction = (e) => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        if (!activeCard) return;
+        if (activeCard._dragging) {
+          activeCard._dragging = false; activeCard._returning = true; activeCard._targetScale = 1;
+          activeCard._targetX = activeCard._homeX; activeCard._targetY = activeCard._homeY; activeCard._targetRot = activeCard._homeRot;
+          spawnParticles(activeCard.x, activeCard.y, activeCard._glowColor, 3, activeCard._suitSymbol);
+        } else if (!didDrag && downTime > 0) {
+          if (selectCallback) selectCallback(activeCard._cardIndex);
+          spawnParticles(activeCard.x, activeCard.y, activeCard._glowColor, 4, activeCard._suitSymbol);
+        }
+        activeCard = null; downTime = 0;
+      };
+      evTarget.addEventListener('pointerup', endInteraction);
+      evTarget.addEventListener('pointercancel', endInteraction);
+
+      cardsContainer = new PIXI.Container();
+      app.stage.addChild(cardsContainer);
+      particleContainer = new PIXI.Container();
+      app.stage.addChild(particleContainer);
+
+      // Main loop
+      app.ticker.add(() => {
+        tick++;
+        if (tick % 8 === 0) spawnEmber();
+        // Particles
+        for (let i = particles.length-1; i >= 0; i--) {
+          const p = particles[i];
+          p.x += p._vx; p.y += p._vy; p._life -= p._decay;
+          p.alpha = Math.max(0, p._life*0.7);
+          if (p._life <= 0) { particleContainer.removeChild(p); particles.splice(i,1); }
+        }
+        // Cards
+        let anyHD = false;
+        cards.forEach(card => {
+          const glow = card._glow, sel = card._selOutline;
+          const speed = card._returning ? 0.12 : (card._dragging ? 0.25 : 0.09);
+          card.x = lerp(card.x, card._targetX, speed);
+          card.y = lerp(card.y, card._targetY, speed);
+          card.rotation = lerp(card.rotation, card._targetRot, speed);
+          card.scale.x = lerp(card.scale.x, card._targetScale, 0.12);
+          card.scale.y = lerp(card.scale.y, card._targetScale, 0.12);
+          if (card._returning) {
+            if (Math.abs(card.x-card._homeX)<1 && Math.abs(card.y-card._homeY)<1) card._returning = false;
+          }
+          glow.x = card.x; glow.y = card.y; glow.rotation = card.rotation; glow.scale.set(card.scale.x);
+          sel.x = card.x; sel.y = card.y; sel.rotation = card.rotation; sel.scale.set(card.scale.x);
+          sel.alpha = card._selected ? lerp(sel.alpha, 1, 0.15) : lerp(sel.alpha, 0, 0.15);
+          if (card._dragging) {
+            anyHD = true; glow.alpha = lerp(glow.alpha, 0.85, 0.12);
+            const top = cardsContainer.children.length;
+            try { cardsContainer.setChildIndex(glow, top-3); cardsContainer.setChildIndex(card, top-2); cardsContainer.setChildIndex(sel, top-1); } catch(e){}
+            if (tick%6===0) spawnParticles(card.x, card.y+CARD_H*0.3, card._glowColor, 2, card._suitSymbol);
+          } else if (card._hovered && !card._selected) {
+            anyHD = true; glow.alpha = lerp(glow.alpha, 0.65, 0.1);
+            card._targetScale = 1.05; card._targetY = card._homeY - 20;
+            const top = cardsContainer.children.length;
+            try { cardsContainer.setChildIndex(glow, top-3); cardsContainer.setChildIndex(card, top-2); cardsContainer.setChildIndex(sel, top-1); } catch(e){}
+          } else if (card._selected) {
+            glow.alpha = lerp(glow.alpha, 0.55, 0.08);
+            card._targetScale = 1.03; card._targetY = card._baseY - 45; card._targetRot = 0;
+          } else {
+            glow.alpha = lerp(glow.alpha, 0, 0.06);
+            card._targetScale = 1; card._targetY = card._homeY; card._targetRot = card._homeRot;
+          }
+        });
+        if (!anyHD) rebuildZOrder();
+      });
+
+      // Resize
+      const ro = new ResizeObserver(entries => {
+        const r = entries[0].contentRect;
+        if (r.width > 0 && r.height > 0) {
+          app.renderer.resize(r.width, r.height);
+          W = app.screen.width; H = app.screen.height;
+          layoutHand();
+        }
+      });
+      ro.observe(containerEl);
+    },
+
+    update: function(handCards, selectedSet, isInteractive) {
+      if (!app) return;
+      if (!handCards || handCards.length === 0) {
+        // Clear all
+        cards.forEach(c => {
+          if (c._glow.parent) c._glow.parent.removeChild(c._glow);
+          if (c.parent) c.parent.removeChild(c);
+          if (c._selOutline.parent) c._selOutline.parent.removeChild(c._selOutline);
+        });
+        cards = []; lastHandIds = ''; return;
+      }
+
+      // Check if hand composition changed (not just selection)
+      const newIds = handCards.map(c => c.id).join(',');
+      const handChanged = newIds !== lastHandIds;
+
+      if (handChanged) {
+        lastHandIds = newIds;
+        // Build map of existing sprites by card ID
+        const existingById = {};
+        cards.forEach(c => { if (c._cardId) existingById[c._cardId] = c; });
+        // Figure out which cards are new vs kept
+        const newCardIds = new Set(handCards.map(c => c.id));
+        // Remove sprites for cards no longer in hand
+        cards.forEach(c => {
+          if (!newCardIds.has(c._cardId)) {
+            if (c._glow.parent) c._glow.parent.removeChild(c._glow);
+            if (c.parent) c.parent.removeChild(c);
+            if (c._selOutline.parent) c._selOutline.parent.removeChild(c._selOutline);
+          }
+        });
+
+        const newCards = [];
+        handCards.forEach((card, i) => {
+          let sprite = existingById[card.id];
+          if (sprite) {
+            // Kept card — update index, keep position (lerp will move it)
+            sprite._handIndex = i;
+            sprite._cardIndex = i;
+            sprite._selected = selectedSet && selectedSet.has(i);
+            sprite.interactive = isInteractive;
+          } else {
+            // New card — create sprite, start offscreen bottom
+            const suit = SUIT_DATA[card.suit] || SUIT_DATA.null;
+            const tex = getTexture(card.suit, card.value);
+            const glow = new PIXI.Graphics();
+            glow.beginFill(suit.glowHex, 0.4);
+            glow.drawRoundedRect(-CARD_W/2-14, -CARD_H/2-14, CARD_W+28, CARD_H+28, 16);
+            glow.endFill();
+            glow.filters = [new PIXI.BlurFilter(16)]; glow.alpha = 0;
+            const selOutline = new PIXI.Graphics();
+            selOutline.lineStyle(3, 0xd4a840, 1);
+            selOutline.drawRoundedRect(-CARD_W/2-1, -CARD_H/2-1, CARD_W+2, CARD_H+2, CORNER_R+1);
+            selOutline.lineStyle(1.5, 0xf0d060, 0.6);
+            selOutline.drawRoundedRect(-CARD_W/2-3, -CARD_H/2-3, CARD_W+6, CARD_H+6, CORNER_R+3);
+            selOutline.alpha = 0;
+            sprite = new PIXI.Sprite(tex);
+            sprite.anchor.set(0.5);
+            sprite._glow = glow; sprite._selOutline = selOutline;
+            sprite._glowColor = suit.glowHex; sprite._suitSymbol = suit.symbol;
+            sprite._handIndex = i; sprite._cardIndex = i;
+            sprite._cardId = card.id;
+            sprite._targetX = W/2; sprite._targetY = H + 150;
+            sprite._targetRot = 0; sprite._targetScale = 1;
+            sprite._homeX = W/2; sprite._homeY = H + 150; sprite._homeRot = 0;
+            sprite._hovered = false; sprite._dragging = false; sprite._returning = false;
+            sprite._selected = selectedSet && selectedSet.has(i);
+            sprite.x = W/2; sprite.y = H + 150;
+            sprite.interactive = isInteractive;
+            cardsContainer.addChild(glow);
+            cardsContainer.addChild(sprite);
+            cardsContainer.addChild(selOutline);
+          }
+          newCards.push(sprite);
+        });
+        cards = newCards;
+        layoutHand();
+      } else {
+        // Same hand — just update selection state (no rebuild, no blink)
+        cards.forEach((sprite, i) => {
+          sprite._selected = selectedSet && selectedSet.has(sprite._cardIndex);
+          sprite.interactive = isInteractive;
+          sprite.cursor = isInteractive ? 'pointer' : 'default';
+        });
+      }
+    },
+
+    onSelect: function(cb) { selectCallback = cb; },
+    destroy: function() { if (app) { app.destroy(true); app=null; } },
+  };
+})();
+</script>
+
 <script type="text/babel">
 const { useState, useCallback, useMemo, useEffect, useRef } = React;
 
@@ -634,66 +1087,83 @@ function getCombinations(n, k) {
   bt(0); return r;
 }
 
-function Card({ card, faceDown, selected, selectable, onClick, small, glowing, overlap, index }) {
+function Card({ card, faceDown, selected, selectable, onClick, small, glowing, overlap, index, deckColor }) {
   if (!card) return null;
-  const isPot = card.source === "pot";
   const isNull = card.suit === NULL_SUIT;
-  const color = SUIT_COLORS[card.suit] || "#8B5E3C";
+  const isRed = card.suit === "hearts" || card.suit === "diamonds";
+  const suitColor = isNull ? "#8B5E3C" : isRed ? "#c0392b" : "#1a1a2e";
   const symbol = SUIT_SYMBOLS[card.suit] || "∅";
   const label = VALUE_NAMES[card.value];
   const w = small ? 58 : 88;
   const h = small ? 80 : 120;
+  const glowAnim = selected ? "cardGlowGold" : isRed ? "cardGlowRed" : "cardGlowBlack";
+
+  // Card back colors by deck
+  const backColors = {
+    cpu: { bg1: "#3a1818", bg2: "#4a2020", border: "#6a3030", accent: "rgba(180,60,60,0.3)" },
+    pot: { bg1: "#3a3018", bg2: "#4a3e20", border: "#6a5a30", accent: "rgba(200,170,60,0.3)" },
+    player: { bg1: "#183a20", bg2: "#204a28", border: "#306a38", accent: "rgba(60,180,80,0.3)" },
+    default: { bg1: "#1a2030", bg2: "#242e3a", border: "#3a4a5a", accent: "rgba(100,130,180,0.2)" },
+  };
+  const back = backColors[deckColor] || backColors.default;
 
   return (
     <div
       onClick={selectable ? onClick : undefined}
       onTouchEnd={selectable ? (e) => { e.preventDefault(); onClick && onClick(); } : undefined}
       style={{
-        width: w, height: h, borderRadius: 8, flexShrink: 0,
+        width: w, height: h, borderRadius: small ? 6 : 8, flexShrink: 0,
         marginLeft: overlap ? (small ? -26 : -32) : 0,
-        border: selected ? "3px solid #f1c40f" : glowing ? "2px solid #e74c3c" : isNull ? "2px solid rgba(139,94,60,0.5)" : "2px solid rgba(0,0,0,0.15)",
+        border: selected ? "2px solid #c4a460" : glowing ? "2px solid #c4a460" : `1px solid ${faceDown ? back.border : isNull ? "rgba(139,94,60,0.4)" : "rgba(0,0,0,0.2)"}`,
         background: faceDown
-          ? "linear-gradient(135deg, #2c3e50 0%, #1a252f 50%, #2c3e50 100%)"
+          ? `linear-gradient(145deg, ${back.bg1} 0%, ${back.bg2} 100%)`
           : isNull
           ? "linear-gradient(145deg, #f5e6d0 0%, #e8d5b8 50%, #d4bc9a 100%)"
-          : "linear-gradient(145deg, #fefefe 0%, #f0ead6 100%)",
+          : "linear-gradient(145deg, #faf6ef 0%, #f0ead6 50%, #e8e0cc 100%)",
         display: "flex", flexDirection: "column", justifyContent: "space-between",
         padding: small ? "4px 5px" : "6px 8px",
         cursor: selectable ? "pointer" : "default",
         WebkitTapHighlightColor: "transparent",
         touchAction: "manipulation",
         boxShadow: selected
-          ? "0 -4px 12px rgba(241,196,15,0.4), 0 4px 10px rgba(0,0,0,0.3)"
+          ? "0 -4px 16px rgba(232,213,163,0.35), 0 6px 16px rgba(0,0,0,0.5)"
           : glowing
-          ? "0 0 12px rgba(231,76,60,0.4), 0 4px 10px rgba(0,0,0,0.3)"
-          : "0 2px 8px rgba(0,0,0,0.25)",
-        transition: "all 0.15s ease",
-        transform: selected ? "translateY(-16px)" : "none",
+          ? "0 0 14px rgba(196,164,96,0.3), 0 4px 12px rgba(0,0,0,0.4)"
+          : "0 2px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04)",
+        transition: "transform 0.2s ease, box-shadow 0.2s ease, border 0.15s ease",
+        transform: selected ? "translateY(-18px)" : "none",
         position: "relative", overflow: "hidden", userSelect: "none",
         zIndex: index != null ? index : 1,
+        animation: (selectable && !faceDown) ? `${glowAnim} 2.5s ease-in-out infinite` : "none",
       }}
     >
+      {/* Subtle inner edge highlight */}
+      <div style={{ position: "absolute", inset: 0, borderRadius: "inherit", border: "1px solid rgba(255,255,255,0.06)", pointerEvents: "none" }} />
+
       {faceDown ? (
         <div style={{
-          position: "absolute", inset: 5, borderRadius: 4,
-          border: "1.5px solid rgba(255,255,255,0.08)",
-          background: "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.03) 4px, rgba(255,255,255,0.03) 8px)",
+          position: "absolute", inset: small ? 3 : 5, borderRadius: small ? 3 : 4,
+          border: `1px solid ${back.accent}`,
+          background: `repeating-linear-gradient(45deg, transparent, transparent ${small ? 3 : 4}px, ${back.accent} ${small ? 3 : 4}px, ${back.accent} ${small ? 6 : 8}px)`,
           display: "flex", alignItems: "center", justifyContent: "center",
         }}>
-          <span style={{ fontSize: small ? 18 : 26, opacity: 0.15 }}>♠</span>
+          <span style={{ fontSize: small ? 14 : 20, fontWeight: 900, fontFamily: "'Cinzel', serif", color: "rgba(255,255,255,0.12)", letterSpacing: 2 }}>SB</span>
         </div>
       ) : (
         <>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1 }}>
-            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
-            <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
+          {/* Top-left rank + suit */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1, zIndex: 1 }}>
+            <span style={{ fontSize: small ? 15 : 22, fontWeight: 900, color: suitColor, fontFamily: "'Cinzel', serif" }}>{label}</span>
+            <span style={{ fontSize: small ? 12 : 15, color: suitColor, marginTop: -1 }}>{symbol}</span>
           </div>
-          <div style={{ fontSize: small ? 24 : 36, textAlign: "center", color, lineHeight: 1, opacity: 0.35 }}>
+          {/* Center suit symbol */}
+          <div style={{ fontSize: small ? 22 : 34, textAlign: "center", color: suitColor, lineHeight: 1, opacity: 0.15, zIndex: 0 }}>
             {symbol}
           </div>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)" }}>
-            <span style={{ fontSize: small ? 16 : 24, fontWeight: 800, color, fontFamily: "'Georgia', serif" }}>{label}</span>
-            <span style={{ fontSize: small ? 13 : 16, color, marginTop: -1 }}>{symbol}</span>
+          {/* Bottom-right rank + suit (inverted) */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", lineHeight: 1, transform: "rotate(180deg)", zIndex: 1 }}>
+            <span style={{ fontSize: small ? 15 : 22, fontWeight: 900, color: suitColor, fontFamily: "'Cinzel', serif" }}>{label}</span>
+            <span style={{ fontSize: small ? 12 : 15, color: suitColor, marginTop: -1 }}>{symbol}</span>
           </div>
         </>
       )}
@@ -709,8 +1179,8 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
   if (collapsed) {
     return (
       <div style={{
-        width: 44, minWidth: 44, padding: "12px 4px",
-        background: "linear-gradient(180deg, #1a3a22 0%, #12291a 100%)",
+        width: 58, minWidth: 58, padding: "12px 6px",
+        background: "linear-gradient(180deg, #1a1812 0%, #12100a 100%)",
         borderRight: "1px solid rgba(255,255,255,0.08)",
         display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
         fontFamily: "'Georgia', serif", color: "#e8e0cc",
@@ -737,7 +1207,7 @@ function SidePanel({ phase, currentRound, roundInfo, bankScore, roundResults, co
   return (
     <div style={{
       width: 220, minWidth: 220, padding: "20px 16px",
-      background: "linear-gradient(180deg, #1a3a22 0%, #12291a 100%)",
+      background: "linear-gradient(180deg, #1a1812 0%, #12100a 100%)",
       borderRight: "1px solid rgba(255,255,255,0.08)",
       display: "flex", flexDirection: "column", gap: 16,
       fontFamily: "'Georgia', serif", overflowY: "auto", WebkitOverflowScrolling: "touch", color: "#e8e0cc",
@@ -1015,7 +1485,7 @@ function DeckInspector({ cards, title, subtitle, onClose, markedIds, culledIds }
     >
       <div
         style={{
-          background: "linear-gradient(180deg, #1a3a22 0%, #12291a 100%)",
+          background: "linear-gradient(180deg, #1a1812 0%, #12100a 100%)",
           border: "1px solid rgba(255,255,255,0.12)",
           borderRadius: 16, padding: "20px 16px", maxWidth: 500, width: "100%",
           maxHeight: "85vh", overflowY: "auto", WebkitOverflowScrolling: "touch",
@@ -1144,9 +1614,13 @@ function CommunalPoker() {
   const [checkpoints, setCheckpoints] = useState({});
   const [debugMode, setDebugMode] = useState(false);
   const [rankUpgrades, setRankUpgrades] = useState({});
+  const [levelStoreMode, setLevelStoreMode] = useState(false);
 
   const deckModsRef = useRef([]);
   const opponentModelRef = useRef(createOpponentModel());
+  const pixiHandRef = useRef(null);
+  const gameAreaRef = useRef(null);
+  const pixiInitialized = useRef(false);
 
   function applyCpuTrades(deck, lv) {
     if (lv === 10) {
@@ -1371,8 +1845,13 @@ function CommunalPoker() {
     }
     if (cost > 0) setCoins(c => c - cost);
     setStoreCart(new Set());
-    initSession(currentSession + 1, false);
-  }, [storeCart, currentSession, initSession, swapCardOffers]);
+    if (levelStoreMode) {
+      setLevelStoreMode(false);
+      advanceLevel();
+    } else {
+      initSession(currentSession + 1, false);
+    }
+  }, [storeCart, currentSession, initSession, swapCardOffers, levelStoreMode, advanceLevel]);
 
   const roundInfo = useMemo(() => {
     const p = phase;
@@ -1563,6 +2042,26 @@ function CommunalPoker() {
 
   const isDiscard = phase.includes("discard"), isPlay = phase.includes("play"), isReveal = phase.includes("reveal");
   const currentRound = roundInfo.round;
+  const usePixiCards = window.pixiHand && (phase.startsWith("r1_") || phase.startsWith("r2_") || phase.startsWith("r3_"));
+
+  // PixiJS player hand integration
+  useEffect(() => {
+    if (!window.pixiHand || pixiInitialized.current) return;
+    if (pixiHandRef.current && gameAreaRef.current) {
+      window.pixiHand.init(pixiHandRef.current, gameAreaRef.current);
+      window.pixiHand.onSelect(toggleSelect);
+      pixiInitialized.current = true;
+    }
+  });
+
+  useEffect(() => {
+    if (!window.pixiHand || !pixiInitialized.current) return;
+    if (usePixiCards && playerHand.length > 0) {
+      window.pixiHand.update(playerHand, selected, isDiscard || isPlay);
+    } else {
+      window.pixiHand.update([], new Set(), false);
+    }
+  }, [playerHand, selected, usePixiCards, isDiscard, isPlay]);
 
   // Live hand preview
   const previewHandRank = useMemo(() => {
@@ -1591,10 +2090,10 @@ function CommunalPoker() {
   }, [isPlay, selected, playerHand, communalCards, roundInfo.cardsToPlay, discoveredHands]);
 
   const btn = (bg, border) => ({
-    padding: "12px 28px", borderRadius: 8, border: `1px solid ${border || "rgba(255,255,255,0.15)"}`,
-    background: bg || "rgba(255,255,255,0.08)", color: "#fff", fontSize: 15, fontWeight: 600,
-    cursor: "pointer", fontFamily: "'Segoe UI', sans-serif", letterSpacing: 0.3, transition: "all 0.2s",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+    padding: "12px 28px", borderRadius: 8, border: `1px solid ${border || "#5a4a2a"}`,
+    background: bg || "#1a1510", color: "#e8d5a3", fontSize: 15, fontWeight: 700,
+    cursor: "pointer", fontFamily: "'Cinzel', serif", letterSpacing: 0.5, transition: "all 0.2s",
+    boxShadow: "0 2px 12px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
     minHeight: 44, touchAction: "manipulation", WebkitTapHighlightColor: "transparent",
   });
 
@@ -1604,14 +2103,17 @@ function CommunalPoker() {
   // ─── All phase-specific screens and the main game board ───────────────────
 
   return (
-    <div style={{ width: "100%", height: "100dvh", display: "flex", background: "#0a2912", fontFamily: "'Segoe UI', 'Helvetica Neue', sans-serif", overflow: "hidden", touchAction: "none", overscrollBehavior: "none" }}>
+    <div style={{ width: "100%", height: "100dvh", display: "flex", background: "#0d0a06", fontFamily: "'Crimson Text', 'Georgia', serif", overflow: "hidden", touchAction: "none", overscrollBehavior: "none" }}>
       <SidePanel {...{ phase, currentRound, roundInfo, bankScore, roundResults, previewHandRank, previewHandEval, aiDiscardCounts, currentSession, winStreak, coins, discoveredHands, rankUpgrades }} level={level} collapsed={!sidebarOpen} onToggle={() => setSidebarOpen(s => !s)} />
 
-      <div style={{
+      <div ref={gameAreaRef} style={{
         flex: 1, display: "flex", flexDirection: "column", position: "relative", padding: "8px 16px",
-        background: "radial-gradient(ellipse at center, #1a5c2a 0%, #0f3d1a 50%, #0a2912 100%)",
-        color: "#f0e6d3", overflow: "hidden", minHeight: 0,
+        background: "radial-gradient(ellipse at center, #1e3a24 0%, #142a18 50%, #0d1a10 100%)",
+        color: "#e8e0cc", overflow: "hidden", minHeight: 0,
       }}>
+
+        {/* PixiJS player hand canvas — full game area overlay */}
+        <div ref={pixiHandRef} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", display: usePixiCards ? "block" : "none", pointerEvents: "none", zIndex: 25 }} />
 
         {/* Deck Inspector overlay */}
         {showInspector && (() => {
@@ -1625,12 +2127,33 @@ function CommunalPoker() {
           return null;
         })()}
 
-        {/* Deck Inspector buttons — top left area */}
-        {phase !== PHASES.START && phase !== PHASES.GAME_OVER && phase !== PHASES.LEVEL_COMPLETE && phase !== PHASES.LEVEL_REWARD && phase !== PHASES.VICTORY && (
-          <div style={{ position: "absolute", top: 10, left: 10, zIndex: 20, display: "flex", gap: 4 }}>
-            <button onClick={() => setShowInspector("player")} onTouchEnd={(e) => { e.preventDefault(); setShowInspector("player"); }} style={{ padding: "4px 8px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: "rgba(46,204,113,0.15)", border: "1px solid rgba(46,204,113,0.3)", color: "#2ecc71", cursor: "pointer", touchAction: "manipulation", WebkitTapHighlightColor: "transparent" }}>Your Deck</button>
-            <button onClick={() => setShowInspector("ai")} onTouchEnd={(e) => { e.preventDefault(); setShowInspector("ai"); }} style={{ padding: "4px 8px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: "rgba(231,76,60,0.15)", border: "1px solid rgba(231,76,60,0.3)", color: "#e74c3c", cursor: "pointer", touchAction: "manipulation", WebkitTapHighlightColor: "transparent" }}>Foe Deck</button>
-            <button onClick={() => setShowInspector("pot")} onTouchEnd={(e) => { e.preventDefault(); setShowInspector("pot"); }} style={{ padding: "4px 8px", borderRadius: 6, fontSize: 10, fontWeight: 600, background: "rgba(241,196,15,0.15)", border: "1px solid rgba(241,196,15,0.3)", color: "#f1c40f", cursor: "pointer", touchAction: "manipulation", WebkitTapHighlightColor: "transparent" }}>Pot Pool</button>
+        {/* Deck visuals — top left area */}
+        {phase !== PHASES.START && phase !== PHASES.GAME_OVER && phase !== PHASES.LEVEL_COMPLETE && phase !== PHASES.LEVEL_REWARD && phase !== PHASES.VICTORY && phase !== PHASES.SESSION_COMPLETE && phase !== PHASES.STORE && (
+          <div style={{ position: "absolute", top: 8, left: 10, zIndex: 20, display: "flex", gap: 12 }}>
+            {[
+              { label: "CPU", count: aiDeck.length + aiHand.length, color: "#f0a8a0", border: "#e74c3c", bg: "linear-gradient(135deg, #8e2020 0%, #c0392b 50%, #8e2020 100%)", onClick: () => setShowInspector("ai") },
+              { label: "Pot", count: potDeck.length, color: "#f1c40f", border: "#f39c12", bg: "linear-gradient(135deg, #b7950b 0%, #f1c40f 50%, #b7950b 100%)", onClick: () => setShowInspector("pot") },
+              { label: "You", count: playerDeck.length + playerHand.length, color: "#2ecc71", border: "#27ae60", bg: "linear-gradient(135deg, #1e8449 0%, #2ecc71 50%, #1e8449 100%)", onClick: () => setShowInspector("player") },
+            ].map(d => (
+              <div key={d.label} onClick={d.onClick} onTouchEnd={(e) => { e.preventDefault(); d.onClick(); }}
+                style={{ cursor: "pointer", touchAction: "manipulation", textAlign: "center", WebkitTapHighlightColor: "transparent" }}>
+                <div style={{
+                  width: 44, height: 62, borderRadius: 7, position: "relative",
+                  background: d.bg,
+                  border: `2px solid ${d.border}`,
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  <div style={{
+                    position: "absolute", inset: 4, borderRadius: 3,
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    background: "repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(255,255,255,0.04) 3px, rgba(255,255,255,0.04) 6px)",
+                  }} />
+                  <span style={{ fontSize: 18, fontWeight: 700, color: "rgba(255,255,255,0.3)", zIndex: 1 }}>{d.count}</span>
+                </div>
+                <div style={{ fontSize: 8, letterSpacing: 1, textTransform: "uppercase", marginTop: 2, color: d.color, fontWeight: 600 }}>{d.label}</div>
+              </div>
+            ))}
           </div>
         )}
 
@@ -1671,7 +2194,7 @@ function CommunalPoker() {
         {/* Rules Modal */}
         {showRules && (
           <div style={{ position: "absolute", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowRules(false)} onTouchEnd={(e) => { e.preventDefault(); setShowRules(false); }}>
-            <div style={{ background: "linear-gradient(180deg, #1a3a22 0%, #12291a 100%)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, padding: "24px 20px", maxWidth: 420, width: "100%", maxHeight: "85vh", overflowY: "auto", WebkitOverflowScrolling: "touch", color: "#e8e0cc", fontFamily: "'Segoe UI', sans-serif", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }} data-scrollable onClick={(e) => e.stopPropagation()} onTouchEnd={(e) => e.stopPropagation()}>
+            <div style={{ background: "linear-gradient(180deg, #1a1812 0%, #12100a 100%)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, padding: "24px 20px", maxWidth: 420, width: "100%", maxHeight: "85vh", overflowY: "auto", WebkitOverflowScrolling: "touch", color: "#e8e0cc", fontFamily: "'Segoe UI', sans-serif", boxShadow: "0 8px 32px rgba(0,0,0,0.5)" }} data-scrollable onClick={(e) => e.stopPropagation()} onTouchEnd={(e) => e.stopPropagation()}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                 <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Georgia', serif", background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>How to Play</div>
                 <button onClick={() => setShowRules(false)} onTouchEnd={(e) => { e.preventDefault(); setShowRules(false); }} style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, color: "#f0e6d3", fontSize: 16, cursor: "pointer", padding: "4px 10px", touchAction: "manipulation" }}>✕</button>
@@ -1773,8 +2296,8 @@ function CommunalPoker() {
                 {(level + 1 >= 7) && <div style={{ fontSize: 11, opacity: 0.5, marginTop: 6 }}>Checkpoint at Level 7 — defeat rolls back here.</div>}
               </div>
             )}
-            <button onClick={() => advanceLevel()} onTouchEnd={(e) => { e.preventDefault(); advanceLevel(); }} style={btn("#27ae60", "#2ecc71")}>
-              {level < 10 ? `Begin Level ${level + 1} →` : "Victory!"}
+            <button onClick={() => { setLevelStoreMode(true); setPhase(PHASES.STORE); }} onTouchEnd={(e) => { e.preventDefault(); setLevelStoreMode(true); setPhase(PHASES.STORE); }} style={btn("#27ae60", "#2ecc71")}>
+              Visit Store Before Level {level + 1} →
             </button>
           </div>
         )}
@@ -1793,8 +2316,8 @@ function CommunalPoker() {
             <div style={{ fontSize: 14, opacity: 0.5 }}>
               {level === 3 ? "You've mastered the standard game. The real challenge begins..." : "You've survived the CPU's mid-range trades. Face cards are next..."}
             </div>
-            <button onClick={() => advanceLevel()} onTouchEnd={(e) => { e.preventDefault(); advanceLevel(); }} style={btn("#9b59b6", "#bb8fce")}>
-              Enter {level === 3 ? "Act 2" : "Act 3"} →
+            <button onClick={() => { setLevelStoreMode(true); setPhase(PHASES.STORE); }} onTouchEnd={(e) => { e.preventDefault(); setLevelStoreMode(true); setPhase(PHASES.STORE); }} style={btn("#9b59b6", "#bb8fce")}>
+              Visit Store Before {level === 3 ? "Act 2" : "Act 3"} →
             </button>
           </div>
         )}
@@ -1865,7 +2388,7 @@ function CommunalPoker() {
           return (
             <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, zIndex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", padding: "16px 0" }} data-scrollable>
               <div style={{ fontSize: 12, letterSpacing: 2, textTransform: "uppercase", opacity: 0.5 }}>
-                Before Session {currentSession + 2} · Level {level}
+                {levelStoreMode ? `Before Level ${level + 1}` : `Before Session ${currentSession + 2} · Level ${level}`}
               </div>
               <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "'Georgia', serif", background: "linear-gradient(180deg, #f5d998 0%, #c9973b 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>THE STORE</div>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#f1c40f" }}>
@@ -1964,7 +2487,9 @@ function CommunalPoker() {
                 onTouchEnd={(e) => { e.preventDefault(); if (afterPurchase >= 0 || cartCost === 0) proceedFromStore(); }}
                 style={{...btn("#27ae60", "#2ecc71"), ...(cartCost > 0 && afterPurchase < 0 ? { opacity: 0.4, cursor: "not-allowed" } : {})}}
               >
-                {cartCost > 0 ? `Buy & Start Session ${currentSession + 2} →` : `Skip Store — Session ${currentSession + 2} →`}
+                {levelStoreMode
+                  ? (cartCost > 0 ? `Buy & Begin Level ${level + 1} →` : `Skip Store — Level ${level + 1} →`)
+                  : (cartCost > 0 ? `Buy & Start Session ${currentSession + 2} →` : `Skip Store — Session ${currentSession + 2} →`)}
               </button>
             </div>
           );
@@ -1972,7 +2497,7 @@ function CommunalPoker() {
 
         {/* ═══════ ACTIVE GAME ═══════ */}
         {phase !== PHASES.START && phase !== PHASES.GAME_OVER && phase !== PHASES.SESSION_COMPLETE && phase !== PHASES.STORE && phase !== PHASES.LEVEL_COMPLETE && phase !== PHASES.LEVEL_REWARD && phase !== PHASES.VICTORY && (
-          <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, zIndex: 1, paddingTop: "2vh", paddingBottom: "1vh" }}>
+          <div style={{ display: "flex", flexDirection: "column", position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 20, paddingTop: "2vh", paddingBottom: "1vh", padding: "2vh 16px 1vh 16px", pointerEvents: "none" }}>
             {/* Level + Session indicator */}
             <div style={{ display: "flex", justifyContent: "center", padding: "0 0 2px", flexShrink: 0 }}>
               <div style={{
@@ -1998,7 +2523,7 @@ function CommunalPoker() {
             {/* Opponent hand */}
             <div style={{ display: "flex", justifyContent: "center", padding: "4px 0 4px", flexShrink: 0 }}>
               <div style={{ display: "flex" }}>
-                {aiHand.map((card, i) => <Card key={card.id} card={card} faceDown={!showAiCards} small overlap={i > 0} index={i} />)}
+                {aiHand.map((card, i) => <Card key={card.id} card={card} faceDown={!showAiCards} small overlap={i > 0} index={i} deckColor="cpu" />)}
               </div>
             </div>
 
@@ -2023,13 +2548,13 @@ function CommunalPoker() {
             {aiPlayed[currentRound]?.length > 0 && (
               <div style={{ display: "flex", justifyContent: "center", padding: "2px 0", flexShrink: 0 }}>
                 <div style={{ display: "flex", gap: 6 }}>
-                  {aiPlayed[currentRound].map(c => <Card key={c.id} card={c} faceDown={!isReveal && !showAiCards} small />)}
+                  {aiPlayed[currentRound].map(c => <Card key={c.id} card={c} faceDown={!isReveal && !showAiCards} small deckColor="cpu" />)}
                 </div>
               </div>
             )}
 
             {/* Center: Communal — flexible area */}
-            <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", gap: 8, paddingTop: 8 }}>
               <div style={{
                 padding: "10px 20px", borderRadius: 14,
                 background: "rgba(0,0,0,0.15)", border: "1px solid rgba(255,255,255,0.06)",
@@ -2041,6 +2566,13 @@ function CommunalPoker() {
                   {communalCards.map(c => <Card key={c.id} card={c} glowing />)}
                 </div>
               </div>
+
+              {/* Discard guidance */}
+              {isDiscard && (
+                <div style={{ textAlign: "center", fontSize: 11, textTransform: "uppercase", letterSpacing: 1.5, opacity: 0.8, marginTop: 4, color: "#f1c40f", position: "relative", zIndex: 30 }}>
+                  Select up to {roundInfo.maxDiscard} to discard
+                </div>
+              )}
 
               {/* Round result banner */}
               {isReveal && roundResults.length > 0 && (() => {
@@ -2062,54 +2594,53 @@ function CommunalPoker() {
                   </div>
                 );
               })()}
+
+              {/* Player played — inside communal area so it stays near the pot */}
+              {playerPlayed[currentRound]?.length > 0 && (
+                <div style={{ display: "flex", justifyContent: "center", padding: "2px 0" }}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {playerPlayed[currentRound].map(c => <Card key={c.id} card={c} small />)}
+                  </div>
+                </div>
+              )}
+
+              {/* Live hand preview */}
+              {isPlay && previewHandEval && (
+                <div style={{ display: "flex", justifyContent: "center", padding: "2px 0" }}>
+                  <div style={{
+                    padding: "3px 14px", borderRadius: 12,
+                    background: previewHandEval.isMystery ? "rgba(155,89,182,0.2)" : "rgba(241,196,15,0.12)",
+                    border: previewHandEval.isMystery ? "1px solid rgba(155,89,182,0.5)" : "1px solid rgba(241,196,15,0.25)",
+                    fontSize: 12, fontWeight: 700,
+                    color: previewHandEval.isMystery ? "#bb8fce" : "#f1c40f",
+                    letterSpacing: 0.5,
+                    animation: previewHandEval.isMystery ? "mysteryPulse 1.5s ease-in-out infinite" : "none",
+                  }}>
+                    {previewHandEval.name}
+                  </div>
+                </div>
+              )}
+
             </div>
 
-            {/* Player played */}
-            {playerPlayed[currentRound]?.length > 0 && (
-              <div style={{ display: "flex", justifyContent: "center", padding: "2px 0", flexShrink: 0 }}>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {playerPlayed[currentRound].map(c => <Card key={c.id} card={c} small />)}
-                </div>
-              </div>
-            )}
-
-            {/* Live hand preview */}
-            {isPlay && previewHandEval && (
-              <div style={{ display: "flex", justifyContent: "center", padding: "2px 0", flexShrink: 0 }}>
-                <div style={{
-                  padding: "3px 14px", borderRadius: 12,
-                  background: previewHandEval.isMystery ? "rgba(155,89,182,0.2)" : "rgba(241,196,15,0.12)",
-                  border: previewHandEval.isMystery ? "1px solid rgba(155,89,182,0.5)" : "1px solid rgba(241,196,15,0.25)",
-                  fontSize: 12, fontWeight: 700,
-                  color: previewHandEval.isMystery ? "#bb8fce" : "#f1c40f",
-                  letterSpacing: 0.5,
-                  animation: previewHandEval.isMystery ? "mysteryPulse 1.5s ease-in-out infinite" : "none",
-                }}>
-                  {previewHandEval.name}
-                </div>
-              </div>
-            )}
-
             {/* Player hand */}
-            <div style={{ padding: "6px 0 0", flexShrink: 0 }}>
-              <div style={{ textAlign: "center", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, opacity: 0.5, marginBottom: 4 }}>
-                Your Hand ({playerHand.length})
-                {isDiscard && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select up to {roundInfo.maxDiscard} to discard</span>}
-                {isPlay && <span style={{ color: "#f1c40f", opacity: 1 }}> · Select {roundInfo.cardsToPlay} to play</span>}
-              </div>
-              <div style={{ display: "flex", justifyContent: "center" }}>
-                {playerHand.map((card, i) => (
-                  <Card
-                    key={card.id} card={card} selected={selected.has(i)}
-                    selectable={isDiscard || isPlay} onClick={() => toggleSelect(i)}
-                    overlap={i > 0} index={i}
-                  />
-                ))}
-              </div>
+            <div style={{ padding: "6px 0 0", flexShrink: 0, marginBottom: usePixiCards ? 100 : 0 }}>
+              {/* DOM fallback for player hand */}
+              {!usePixiCards && (
+                <div style={{ display: "flex", justifyContent: "center" }}>
+                  {playerHand.map((card, i) => (
+                    <Card
+                      key={card.id} card={card} selected={selected.has(i)}
+                      selectable={isDiscard || isPlay} onClick={() => toggleSelect(i)}
+                      overlap={i > 0} index={i}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Buttons — pinned at bottom */}
-            <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "8px 0 6px", flexShrink: 0 }}>
+            <div style={{ display: "flex", justifyContent: "center", gap: 10, padding: "8px 0 6px", flexShrink: 0, pointerEvents: "auto" }}>
               {isDiscard && (
                 <button onClick={() => confirmDiscard()} onTouchEnd={(e) => { e.preventDefault(); confirmDiscard(); }} style={btn("#27ae60", "#2ecc71")}>
                   {selected.size === 0 ? "Keep All" : `Discard ${selected.size}`}
