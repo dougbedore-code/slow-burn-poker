@@ -55,7 +55,7 @@
 window.pixiHand = (function() {
   if (!window.PIXI) return null;
 
-  const CARD_W = 110, CARD_H = 160, CORNER_R = 10, OVERLAP = 50;
+  const CARD_W = 110, CARD_H = 160, CORNER_R = 10, OVERLAP = 42;
   const SUIT_DATA = {
     spades:   { symbol: '\u2660', color: '#222222', hex: 0x222222, glowHex: 0x6688aa },
     clubs:    { symbol: '\u2663', color: '#222222', hex: 0x222222, glowHex: 0x6688aa },
@@ -79,10 +79,10 @@ window.pixiHand = (function() {
     // Shadow layers
     const s2 = new PIXI.Graphics();
     s2.beginFill(0x000000, 0.07); s2.drawRoundedRect(10, 14, CARD_W-20, CARD_H-20, 20); s2.endFill();
-    s2.filters = [new PIXI.BlurFilter(28)]; c.addChild(s2);
+    s2.filters = [new PIXI.BlurFilter(14, 2)]; c.addChild(s2);
     const s1 = new PIXI.Graphics();
     s1.beginFill(0x000000, 0.15); s1.drawRoundedRect(8, 10, CARD_W-14, CARD_H-14, 18); s1.endFill();
-    s1.filters = [new PIXI.BlurFilter(18)]; c.addChild(s1);
+    s1.filters = [new PIXI.BlurFilter(10, 2)]; c.addChild(s1);
     // Card body
     const body = new PIXI.Graphics();
     body.beginFill(0xf5f2ec); body.drawRoundedRect(0, 0, CARD_W, CARD_H, CORNER_R); body.endFill();
@@ -187,11 +187,11 @@ window.pixiHand = (function() {
     const sorted = [...cards].sort((a,b) => a._handIndex - b._handIndex);
     const totalW = CARD_W + (n-1)*OVERLAP;
     const startX = W/2 - totalW/2 + CARD_W/2;
-    const baseY = H - 190;
+    const baseY = H - 210;
     sorted.forEach((card, i) => {
       const t = n > 1 ? (i/(n-1))*2-1 : 0;
-      const archY = t*t*35;
-      const rot = t*0.2;
+      const archY = t*t*18;
+      const rot = t*0.12;
       card._baseY = baseY;
       card._homeX = startX + i*OVERLAP;
       card._homeY = baseY + archY;
@@ -365,6 +365,9 @@ window.pixiHand = (function() {
           card.rotation = lerp(card.rotation, card._targetRot, speed);
           card.scale.x = lerp(card.scale.x, card._targetScale, 0.12);
           card.scale.y = lerp(card.scale.y, card._targetScale, 0.12);
+          // Safety: ensure card stays visible
+          card.alpha = 1;
+          if (card.scale.x < 0.1) card.scale.set(card._targetScale);
           if (card._returning) {
             if (Math.abs(card.x-card._homeX)<1 && Math.abs(card.y-card._homeY)<1) card._returning = false;
           }
@@ -453,7 +456,7 @@ window.pixiHand = (function() {
             glow.beginFill(suit.glowHex, 0.4);
             glow.drawRoundedRect(-CARD_W/2-14, -CARD_H/2-14, CARD_W+28, CARD_H+28, 16);
             glow.endFill();
-            glow.filters = [new PIXI.BlurFilter(16)]; glow.alpha = 0;
+            glow.filters = [new PIXI.BlurFilter(10, 2)]; glow.alpha = 0;
             const selOutline = new PIXI.Graphics();
             selOutline.lineStyle(3, 0xd4a840, 1);
             selOutline.drawRoundedRect(-CARD_W/2-1, -CARD_H/2-1, CARD_W+2, CARD_H+2, CORNER_R+1);
